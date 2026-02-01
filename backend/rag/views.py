@@ -8,10 +8,11 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from .models import Session, Document, Question, Answer
-from .utils import get_default_session
-from .query import ask_with_citations
+from .utils import get_default_session, normalize_filename
+from .query import ask_with_citations, retrieve_paper_overview
 from .ingest import ingest_pdf
 
+from .router import is_title_question, is_about_paper_question
 
 @api_view(["POST"])
 def ask_question(request):
@@ -28,6 +29,9 @@ def ask_question(request):
     question_text = request.data.get("question")
     session_name = request.data.get("session")
     sources = request.data.get("sources")
+
+    if sources:
+        sources = [normalize_filename(s) for s in sources]
 
     if not question_text:
         return Response(
@@ -48,27 +52,66 @@ def ask_question(request):
         session=session
     )
 
-    # Ask RAG (session + optional source restriction)
-    result = ask_with_citations(
-        question=question_text,
-        session_name=session.name,
-        sources=sources
-    )
+    if sources and is_title_question(question_text):
+        doc = Document.objects.filter(
+            session=session,
+            filename=sources[0]
+        ).first()
 
-    # Persist answer
-    Answer.objects.create(
-        question=question_obj,
-        text=result["answer"],
-        citations=result["citations"]
-    )
+        if doc and doc.title:
+            Answer.objects.create(
+                question=question_obj,
+                text=doc.title,
+                citations=[
+                    {
+                        "source": doc.filename,
+                        "page": 0
+                    }
+                ]
+            )
 
-    return Response(
-        {
-            "answer": result["answer"],
-            "citations": result["citations"]
-        },
-        status=status.HTTP_200_OK
-    )
+            return Response(
+                {
+                    "answer": doc.title,
+                    "citations": [
+                        {
+                            "source": doc.filename,
+                            "page": 0
+                        }
+                    ]
+                },
+                status=status.HTTP_200_OK
+            )
+
+    # 🔹 PAPER OVERVIEW ROUTING
+    if sources and is_about_paper_question(question_text):
+        docs = retrieve_paper_overview(
+            question=question_text,
+            session_name=session.name,
+            source=sources[0],
+        )
+
+        result = ask_with_citations(
+            question=question_text,
+            session_name=session.name,
+            docs_override=docs,
+        )
+
+        Answer.objects.create(
+            question=question_obj,
+            text=result["answer"],
+            citations=result["citations"],
+        )
+
+        return Response(
+            {
+                "answer": result["answer"],
+                "citations": result["citations"],
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 
 
 @api_view(["POST"])
@@ -113,8 +156,10 @@ def upload_pdf(request):
 
 
     # Register document in relational DB
-    Document.objects.get_or_create(
-        filename=file.name,
+    normalized = normalize_filename(file.name)
+
+    document, _ = Document.objects.get_or_create(
+        filename=normalized,
         session=session
     )
 
@@ -122,7 +167,7 @@ def upload_pdf(request):
     ingest_pdf(
         path=str(full_path),
         session_name=session.name,
-        source_name=original_filename
+        document=document
     )
 
     return Response(

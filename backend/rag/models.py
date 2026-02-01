@@ -18,6 +18,9 @@ class Document(models.Model):
     )
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
+    title = models.TextField(null=True, blank=True)
+    abstract = models.TextField(null=True, blank=True)
+
     class Meta:
         unique_together = ("filename", "session")
 

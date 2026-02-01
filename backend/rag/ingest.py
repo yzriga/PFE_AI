@@ -3,41 +3,58 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
-from rag.utils import get_session_path
+
+from rag.utils import get_session_path, normalize_filename
+from rag.metadata import extract_title_and_abstract
+from rag.models import Document
 
 
-def ingest_pdf(path: str, session_name: str, source_name: str):
-    """
-    Ingest a PDF into a session-specific Chroma vector store.
-    source_name is the ORIGINAL filename (stable identifier).
-    """
+def ingest_pdf(path: str, session_name: str, document: Document):
+    pdf_name = document.filename
 
     # 1. Load PDF
     loader = PyPDFLoader(path)
     pages = loader.load()
 
-    # 2. Add metadata (CRITICAL FIX)
-    for page in pages:
-        page.metadata["source"] = source_name
-        page.metadata["page"] = page.metadata.get("page")
+    if not pages:
+        return
 
-    # 3. Split into chunks
+    # 2. Extract metadata from FIRST PAGE
+    first_page_text = pages[0].page_content
+    title, abstract = extract_title_and_abstract(first_page_text)
+
+    # 3. Persist metadata
+    document.title = title
+    document.abstract = abstract
+    document.save(update_fields=["title", "abstract"])
+
+    # 4. Attach metadata to pages
+    # for page in pages:
+    #     page.metadata["source"] = pdf_name
+    #     page.metadata["page"] = page.metadata.get("page")
+    for i, page in enumerate(pages):
+        page.metadata["source"] = pdf_name
+        page.metadata["page"] = i
+
+        if i == 0:
+            page.metadata["section"] = "abstract"
+        else:
+            page.metadata["section"] = "body"
+
+    # 5. Split
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200
     )
     chunks = splitter.split_documents(pages)
 
-    # 4. Embeddings
+    # 6. Store in session vector DB
     embeddings = OllamaEmbeddings(model="nomic-embed-text")
-
-    # 5. Session-specific vector store
     persist_dir = get_session_path(session_name)
 
     vectordb = Chroma(
         persist_directory=persist_dir,
-        embedding_function=embeddings,
+        embedding_function=embeddings
     )
 
-    # 6. Store chunks (auto-persist)
     vectordb.add_documents(chunks)

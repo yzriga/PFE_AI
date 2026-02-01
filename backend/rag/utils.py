@@ -22,3 +22,7 @@ def get_session_path(session_name: str) -> str:
     session_dir = BASE_CHROMA_DIR / session_name
     session_dir.mkdir(parents=True, exist_ok=True)
     return str(session_dir)
+
+
+def normalize_filename(name: str) -> str:
+    return Path(name).name.strip().lower()
