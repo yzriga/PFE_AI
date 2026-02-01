@@ -1,0 +1,41 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+
+# ===== Virtual environment =====
+venv/
+.env/
+.env.local
+
+# ===== Django =====
+db.sqlite3
+media/
+staticfiles/
+
+# ===== Chroma / Vector DB =====
+data/chroma/
+backend/data/chroma/
+
+# ===== Uploaded PDFs =====
+data/pdfs/
+backend/data/pdfs/
+*.pdf
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== Logs =====
+*.log
+
+# ===== IDE =====
+.vscode/
+.idea/
+
+# ===== Jupyter =====
+.ipynb_checkpoints/

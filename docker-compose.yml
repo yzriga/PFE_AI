@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: navigator
+      POSTGRES_USER: navigator
+      POSTGRES_PASSWORD: navigator
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  chromadb:
+    image: chromadb/chroma
+    volumes:
+      - chroma_data:/chroma/chroma
+    ports:
+      - "8001:8000"
+
+volumes:
+  postgres_data:
+  chroma_data:
