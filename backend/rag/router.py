@@ -28,3 +28,15 @@ ABOUT_PATTERNS = [
 def is_about_paper_question(question: str) -> bool:
     q = question.lower().strip()
     return any(re.search(pattern, q) for pattern in ABOUT_PATTERNS)
+
+def is_page_count_question(q: str) -> bool:
+    q = q.lower()
+    return any(
+        p in q
+        for p in [
+            "how many pages",
+            "number of pages",
+            "page count",
+            "total pages"
+        ]
+    )

@@ -26,7 +26,8 @@ def ingest_pdf(path: str, session_name: str, document: Document):
     # 3. Persist metadata
     document.title = title
     document.abstract = abstract
-    document.save(update_fields=["title", "abstract"])
+    document.page_count = len(pages)
+    document.save(update_fields=["title", "abstract", "page_count"])
 
     # 4. Attach metadata to pages
     # for page in pages:

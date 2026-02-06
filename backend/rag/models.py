@@ -20,6 +20,7 @@ class Document(models.Model):
 
     title = models.TextField(null=True, blank=True)
     abstract = models.TextField(null=True, blank=True)
+    page_count = models.IntegerField(null=True, blank=True)
 
     class Meta:
         unique_together = ("filename", "session")

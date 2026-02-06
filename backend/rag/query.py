@@ -3,6 +3,8 @@ from langchain_ollama import OllamaLLM, OllamaEmbeddings
 
 from rag.utils import get_session_path
 
+from collections import Counter
+
 
 def ask_with_citations(
     question: str,
@@ -24,18 +26,16 @@ def ask_with_citations(
         docs = docs_override
 
     else:
+        # 2. Retrieve documents (STRICT filtering if sources provided)
         if sources:
             docs = vectordb.similarity_search(
                 question,
                 k=k,
-                filter={
-                    "$and": [
-                        {"source": {"$in": sources}}
-                    ]
-                }
+                filter={"source": {"$in": sources}}
             )
         else:
             docs = vectordb.similarity_search(question, k=k)
+
 
     if not docs:
         return {
@@ -69,13 +69,27 @@ Question:
 
     answer = llm.invoke(prompt)
 
-    citations = []
-    for d in docs:
-        if hasattr(d, "metadata"):
-            citations.append({
-                "source": d.metadata.get("source"),
-                "page": d.metadata.get("page"),
-            })
+    # citations = []
+    # for d in docs:
+    #     if hasattr(d, "metadata"):
+    #         citations.append({
+    #             "source": d.metadata.get("source"),
+    #             "page": d.metadata.get("page"),
+    #         })
+
+    page_counts = Counter(
+        (d.metadata.get("source"), d.metadata.get("page"))
+        for d in docs
+    )
+
+    citations = [
+        {
+            "source": source,
+            "page": page,
+            "count": count
+        }
+        for (source, page), count in page_counts.items()
+    ]
 
     return {
         "answer": answer,
