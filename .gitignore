@@ -20,6 +20,10 @@ staticfiles/
 # ===== Chroma / Vector DB =====
 data/chroma/
 backend/data/chroma/
+backend/chroma/
+chroma/
+*.sqlite3
+*.sqlite3-*
 
 # ===== Uploaded PDFs =====
 data/pdfs/
