@@ -131,3 +131,89 @@ class Answer(models.Model):
 
     def __str__(self):
         return f"Answer to: {self.question.text[:30]}"
+
+
+class Highlight(models.Model):
+    """
+    User annotations/highlights on document pages.
+    
+    Supports:
+    - Text selection with page + character offsets
+    - User notes and tags
+    - Semantic retrieval via HighlightEmbedding
+    """
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name='highlights',
+        help_text="Document being annotated"
+    )
+    
+    # TODO: Add user FK when auth is implemented
+    # user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='highlights')
+    
+    # Location information
+    page = models.IntegerField(help_text="Page number (1-indexed)")
+    start_offset = models.IntegerField(
+        help_text="Start character offset in page text"
+    )
+    end_offset = models.IntegerField(
+        help_text="End character offset in page text"
+    )
+    
+    # Content
+    text = models.TextField(help_text="Highlighted text from document")
+    note = models.TextField(
+        blank=True,
+        help_text="User's personal note on this highlight"
+    )
+    tags = models.JSONField(
+        default=list,
+        help_text="List of string tags for categorization"
+    )
+    
+    # Metadata
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['document', 'page', 'start_offset']
+        indexes = [
+            models.Index(fields=['document', 'page']),
+            models.Index(fields=['created_at']),
+        ]
+    
+    def __str__(self):
+        preview = self.text[:50] + "..." if len(self.text) > 50 else self.text
+        return f"Highlight on {self.document.filename} p.{self.page}: {preview}"
+
+
+class HighlightEmbedding(models.Model):
+    """
+    Vector embeddings for highlights to enable semantic search.
+    
+    Links a Highlight to its embedding stored in ChromaDB.
+    Allows retrieval of user notes during RAG queries.
+    """
+    highlight = models.OneToOneField(
+        Highlight,
+        on_delete=models.CASCADE,
+        related_name='embedding',
+        help_text="Highlight that was embedded"
+    )
+    
+    embedding_id = models.CharField(
+        max_length=255,
+        unique=True,
+        help_text="ChromaDB document ID for this highlight's embedding"
+    )
+    
+    embedded_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        indexes = [
+            models.Index(fields=['embedding_id']),
+        ]
+    
+    def __str__(self):
+        return f"Embedding for highlight {self.highlight.id} ({self.embedding_id})"

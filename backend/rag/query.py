@@ -2,6 +2,7 @@ from langchain_chroma import Chroma
 from langchain_ollama import OllamaLLM, OllamaEmbeddings
 
 from rag.utils import get_session_path
+from rag.services.highlight_service import HighlightService
 
 from collections import Counter
 
@@ -12,6 +13,7 @@ def ask_with_citations(
     sources=None,
     docs_override=None,
     k: int = 5,
+    include_highlights: bool = True,
 ):
     persist_dir = get_session_path(session_name)
     embeddings = OllamaEmbeddings(model="nomic-embed-text")
@@ -20,6 +22,20 @@ def ask_with_citations(
         persist_directory=persist_dir,
         embedding_function=embeddings
     )
+
+    # 1. Retrieve user highlights first (priority context)
+    highlight_docs = []
+    if include_highlights:
+        try:
+            highlight_service = HighlightService()
+            highlight_docs = highlight_service.retrieve_highlights(
+                session_name=session_name,
+                query=question,
+                k=2  # Retrieve top 2 relevant highlights
+            )
+        except Exception as e:
+            # Gracefully degrade if highlight retrieval fails
+            pass
 
     # USE OVERRIDE IF PROVIDED
     if docs_override is not None:
@@ -31,23 +47,35 @@ def ask_with_citations(
             docs = vectordb.similarity_search(
                 question,
                 k=k,
-                filter={"source": {"$in": sources}}
+                filter={"source": {"$in": sources}, "type": {"$ne": "highlight"}}
             )
         else:
-            docs = vectordb.similarity_search(question, k=k)
+            docs = vectordb.similarity_search(
+                question,
+                k=k,
+                filter={"type": {"$ne": "highlight"}}  # Exclude highlights from regular retrieval
+            )
 
 
-    if not docs:
+    if not docs and not highlight_docs:
         return {
             "answer": "I cannot answer this question based on the selected document(s).",
             "citations": []
         }
 
-    # Normalize docs → text
-    context = "\n\n".join(
-        d.page_content if hasattr(d, "page_content") else d
-        for d in docs
-    )
+    # Build context: Highlights first (priority), then regular chunks
+    context_parts = []
+    
+    # Add highlights with special tag
+    if highlight_docs:
+        for h_doc in highlight_docs:
+            context_parts.append(f"[USER NOTE - Page {h_doc.metadata.get('page', '?')}]\n{h_doc.page_content}")
+    
+    # Add regular document chunks
+    for d in docs:
+        context_parts.append(d.page_content if hasattr(d, "page_content") else d)
+    
+    context = "\n\n".join(context_parts)
 
     llm = OllamaLLM(model="mistral")
 
@@ -55,6 +83,7 @@ def ask_with_citations(
 You are a scientific assistant.
 
 Answer the question using ONLY the context below.
+Pay special attention to sections marked [USER NOTE] as they contain important user annotations.
 If the answer is not explicitly present in the context,
 respond exactly with:
 

@@ -20,6 +20,13 @@ from .views_pubmed import (
     pubmed_metadata,
     pubmed_check_pmc
 )
+from .views_highlights import (
+    create_highlight,
+    list_highlights,
+    get_highlight,
+    update_highlight,
+    delete_highlight
+)
 
 urlpatterns = [
     path("ask/", ask_question, name="ask_question"),
@@ -41,4 +48,11 @@ urlpatterns = [
     path("pubmed/import/", pubmed_import, name="pubmed_import"),
     path("pubmed/metadata/<str:pmid>/", pubmed_metadata, name="pubmed_metadata"),
     path("pubmed/check-pmc/<str:pmid>/", pubmed_check_pmc, name="pubmed_check_pmc"),
+    
+    # Highlights endpoints
+    path("highlights/", create_highlight, name="create_highlight"),
+    path("highlights/list/", list_highlights, name="list_highlights"),
+    path("highlights/<int:highlight_id>/", get_highlight, name="get_highlight"),
+    path("highlights/<int:highlight_id>/update/", update_highlight, name="update_highlight"),
+    path("highlights/<int:highlight_id>/delete/", delete_highlight, name="delete_highlight"),
 ]
