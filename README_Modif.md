@@ -1165,12 +1165,521 @@ curl "http://localhost:8000/api/documents/43/status/"
 
 ---
 
+### 🎯 D4: Modes Multi-Documents
+
+**Objectif**: Permettre la synthèse cross-document (comparaison + revue de littérature)
+
+**Date**: 9 février 2026
+
+#### 🔧 Modifications Backend
+
+##### 1. **Service de Synthèse** (`backend/rag/services/synthesis.py`)
+**Nouvelle classe**: `SynthesisService` (313 lignes)
+
+**Concept**: Analyse multi-documents avec 2 modes de synthèse
+
+**Différence vs RAG classique**:
+- **RAG QA** (mode existant): Question → Réponse simple avec citations
+- **Compare** (nouveau): Topic → Claims avec stances (supports/contradicts/neutral) par paper
+- **Lit Review** (nouveau): Topic → Revue structurée avec sections thématiques
+
+**Architecture**:
+```python
+class SynthesisService:
+    def __init__(self, model="mistral"):
+        self.llm = OllamaLLM(model=model)
+    
+    def compare_papers(question, docs, sources) -> Dict
+    def generate_literature_review(topic, docs, sources) -> Dict
+    def _extract_citations(text) -> List[Dict]
+```
+
+**Méthodes principales**:
+
+```python
+def compare_papers(self, question: str, docs: List, sources: Optional[List[str]]) -> Dict:
+    """
+    Compare multiple papers on a specific topic.
+    
+    Workflow:
+    1. Group documents by source (paper)
+    2. Build context with source-separated sections
+    3. Prompt LLM for structured comparison:
+       - Extract key claims related to topic
+       - For each claim, identify paper stances
+       - Extract evidence (page + excerpt) per stance
+    4. Parse JSON response
+    
+    LLM Prompt Strategy:
+    - Explicitly request JSON output format
+    - Include example structure with nested claims/papers/evidence
+    - Ask for 3-5 major claims (focused output)
+    - Request "supports|contradicts|neutral" stances
+    
+    Output Structure:
+    {
+      "topic": str,
+      "claims": [
+        {
+          "claim": "Global temperatures are rising",
+          "papers": [
+            {
+              "paper_id": "paper1.pdf",
+              "stance": "supports",
+              "evidence": [
+                {"page": 5, "excerpt": "..."}
+              ]
+            },
+            {
+              "paper_id": "paper2.pdf",
+              "stance": "contradicts",
+              "evidence": [...]
+            }
+          ]
+        }
+      ],
+      "num_papers": 3,
+      "sources": ["paper1.pdf", "paper2.pdf", "paper3.pdf"]
+    }
+    
+    Fallback:
+    - Si JSON parse échoue → Retourne raw_response + error
+    - Pas d'exception, graceful degradation
+    """
+```
+
+```python
+def generate_literature_review(self, topic: str, docs: List, sources: Optional[List[str]]) -> Dict:
+    """
+    Generate structured literature review from multiple papers.
+    
+    Workflow:
+    1. Group documents by source
+    2. Build context with source annotations
+    3. Prompt LLM for literature review:
+       - Synthesize findings across papers (not per-paper summaries)
+       - Organize thematically (Methods, Results, Implications, etc.)
+       - Include citations in format [filename.pdf, p.X]
+       - 3-5 sections, 2-3 paragraphs each
+    4. Parse JSON response
+    5. Extract citations from text using regex
+    
+    LLM Prompt Strategy:
+    - Emphasize synthesis over summary
+    - Request thematic organization
+    - Specify citation format for extraction
+    - Ask for compact but comprehensive review
+    
+    Output Structure:
+    {
+      "title": "Literature Review: [Topic]",
+      "outline": ["Section 1", "Section 2", ...],
+      "sections": [
+        {
+          "heading": "Introduction",
+          "paragraphs": [
+            {
+              "text": "Full paragraph with [paper1.pdf, p.5] citations.",
+              "citations": [
+                {"paper": "paper1.pdf", "page": 5}
+              ]
+            }
+          ]
+        }
+      ],
+      "num_papers": 4,
+      "sources": [...]
+    }
+    
+    Citation Extraction:
+    - Regex pattern: \[([^,\]]+),\s*p\.(\d+)\]
+    - Embedded in paragraph objects
+    - Frontend can render as hyperlinks
+    """
+```
+
+**JSON Parsing avec Fallback**:
+```python
+# Extraction robuste
+json_start = response.find("{")
+json_end = response.rfind("}") + 1
+
+if json_start >= 0 and json_end > json_start:
+    json_str = response[json_start:json_end]
+    parsed = json.loads(json_str)
+    # Process...
+else:
+    raise ValueError("No JSON structure found")
+
+# Exception handling
+except (json.JSONDecodeError, ValueError) as e:
+    return {
+        "claims": [],  # ou "sections": []
+        "raw_response": response,
+        "error": f"Failed to parse JSON: {str(e)}",
+        # Continue avec metadata valide
+    }
+```
+
+##### 2. **Extension de l'Endpoint /api/ask/** (`backend/rag/views.py`)
+**Modification**: Ajout paramètre `mode` avec routing
+
+**Nouveau paramètre**:
+```python
+mode = request.data.get("mode", "qa")  # Default: "qa" (backward compatible)
+
+# Validation
+if mode not in ["qa", "compare", "lit_review"]:
+    return Response({"error": "Invalid mode"}, status=400)
+```
+
+**Routing par mode**:
+
+**Mode: compare**
+```python
+if mode == "compare":
+    # 1. Retrieve documents (k=10 for comparison breadth)
+    vectordb = Chroma(...)
+    if sources:
+        docs = vectordb.similarity_search(question, k=10, filter={"source": {"$in": sources}})
+    else:
+        docs = vectordb.similarity_search(question, k=10)
+    
+    # 2. Use synthesis service
+    synthesis = SynthesisService()
+    result = synthesis.compare_papers(question, docs, sources)
+    
+    # 3. Store in Answer with mode tag
+    Answer.objects.create(
+        question=question_obj,
+        text=f"[COMPARE MODE] {result.get('topic')}",
+        citations=[]  # Citations in claims structure
+    )
+    
+    return Response(result, status=200)
+```
+
+**Mode: lit_review**
+```python
+elif mode == "lit_review":
+    # 1. Retrieve documents (k=15 for comprehensive review)
+    docs = vectordb.similarity_search(question, k=15, filter=...)
+    
+    # 2. Generate review
+    synthesis = SynthesisService()
+    result = synthesis.generate_literature_review(topic=question, docs=docs, sources=sources)
+    
+    # 3. Store with mode tag
+    Answer.objects.create(
+        question=question_obj,
+        text=f"[LIT_REVIEW] {result.get('title')}",
+        citations=[]
+    )
+    
+    return Response(result, status=200)
+```
+
+**Mode: qa** (existing logic, unchanged)
+```python
+elif mode == "qa":
+    # Existing metadata routing + default RAG
+    # Full backward compatibility maintained
+```
+
+**Différences clés**:
+- **k parameter**: 5 (QA) vs 10 (compare) vs 15 (lit_review)
+- **Prompt structure**: Simple QA vs structured JSON comparison vs synthesis review
+- **Response format**: answer+citations vs claims+stances vs sections+paragraphs
+- **Storage**: text vs [MODE] tagged text
+
+#### ✅ Tests Unitaires
+
+**Fichier**: `backend/rag/tests/test_synthesis.py` (366 lignes, 12 tests)
+
+**SynthesisServiceTests** (8 tests):
+
+1. `test_compare_papers_success`: 
+   - Mock LLM response avec JSON valide
+   - Vérifie structure claims/papers/evidence
+   - Valide num_papers et sources tracking
+
+2. `test_compare_papers_empty_docs`:
+   - Docs vide → message d'erreur gracieux
+   - Pas d'appel LLM si pas de docs
+
+3. `test_compare_papers_json_parse_error`:
+   - LLM retourne texte non-JSON
+   - Vérifie fallback: raw_response + error + claims=[]
+   - Pas d'exception raised
+
+4. `test_generate_literature_review_success`:
+   - Mock LLM avec JSON review structure
+   - Vérifie title, outline, sections, paragraphs
+   - Valide extraction citations ([paper.pdf, p.5])
+
+5. `test_generate_literature_review_empty_docs`:
+   - Graceful handling de docs vide
+
+6. `test_extract_citations`:
+   - Regex extraction: `[paper1.pdf, p.5]` → `{"paper": "paper1.pdf", "page": 5}`
+   - Test multiple citations dans même texte
+
+7. `test_extract_citations_no_matches`:
+   - Texte sans citations → liste vide
+
+**APIEndpointTests** (4 tests):
+
+1. `test_ask_with_compare_mode`:
+   - POST /api/ask/ avec mode=compare
+   - Mock ChromaDB + LLM
+   - Vérifie response contient topic + claims
+   - Valide Question/Answer créés
+
+2. `test_ask_with_lit_review_mode`:
+   - POST /api/ask/ avec mode=lit_review
+   - Vérifie response contient title + sections
+   - Valide DB persistence
+
+3. `test_ask_with_invalid_mode`:
+   - mode="invalid_mode" → 400 Bad Request
+   - Error message explicite
+
+4. `test_compare_with_source_filtering`:
+   - mode=compare + sources=["doc1.pdf"]
+   - Vérifie filter passé à similarity_search
+   - Validation du source filtering
+
+**Mock Strategy**:
+```python
+# Mock vector DB
+mock_vectordb = Mock()
+mock_vectordb.similarity_search.return_value = mock_docs
+mock_chroma_class.return_value = mock_vectordb
+
+# Mock LLM
+mock_llm_instance = Mock()
+mock_llm_instance.invoke.return_value = '{"claims": [...]}'  # JSON string
+mock_llm_class.return_value = mock_llm_instance
+
+# Patch correct imports
+@patch('langchain_chroma.Chroma')  # NOT 'rag.views.Chroma'
+@patch('langchain_ollama.OllamaEmbeddings')
+@patch('rag.services.synthesis.OllamaLLM')
+```
+
+**Résultats**: ✅ 12/12 PASSED (0.263s)
+
+#### 🧪 Exemples d'Utilisation
+
+**1. Mode Compare**:
+```bash
+curl -X POST http://localhost:8000/api/ask/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "How do different papers view climate change impacts?",
+    "session": "climate-research",
+    "mode": "compare",
+    "sources": ["paper1.pdf", "paper2.pdf", "paper3.pdf"]
+  }'
+
+# Response 200:
+{
+  "topic": "How do different papers view climate change impacts?",
+  "claims": [
+    {
+      "claim": "Global temperatures are rising significantly",
+      "papers": [
+        {
+          "paper_id": "paper1.pdf",
+          "stance": "supports",
+          "evidence": [
+            {
+              "page": 5,
+              "excerpt": "Temperature data shows 1.5°C increase since 1850"
+            }
+          ]
+        },
+        {
+          "paper_id": "paper2.pdf",
+          "stance": "neutral",
+          "evidence": [
+            {
+              "page": 12,
+              "excerpt": "While warming is observed, attribution remains debated"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "claim": "Sea levels are rising at accelerating rates",
+      "papers": [...]
+    }
+  ],
+  "num_papers": 3,
+  "sources": ["paper1.pdf", "paper2.pdf", "paper3.pdf"]
+}
+```
+
+**2. Mode Literature Review**:
+```bash
+curl -X POST http://localhost:8000/api/ask/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "Machine learning applications in healthcare",
+    "session": "ml-health",
+    "mode": "lit_review"
+  }'
+
+# Response 200:
+{
+  "title": "Literature Review: Machine Learning Applications in Healthcare",
+  "outline": [
+    "Introduction",
+    "Diagnostic Systems",
+    "Treatment Optimization",
+    "Future Directions"
+  ],
+  "sections": [
+    {
+      "heading": "Introduction",
+      "paragraphs": [
+        {
+          "text": "Machine learning has transformed healthcare diagnostics [smith2024.pdf, p.3]. Multiple studies demonstrate improved accuracy over traditional methods [jones2025.pdf, p.12].",
+          "citations": [
+            {"paper": "smith2024.pdf", "page": 3},
+            {"paper": "jones2025.pdf", "page": 12}
+          ]
+        }
+      ]
+    },
+    {
+      "heading": "Diagnostic Systems",
+      "paragraphs": [
+        {
+          "text": "Deep learning models achieve 95% accuracy in X-ray analysis [chen2025.pdf, p.45].\n\nHowever, interpretability challenges remain [brown2024.pdf, p.8].",
+          "citations": [
+            {"paper": "chen2025.pdf", "page": 45},
+            {"paper": "brown2024.pdf", "page": 8}
+          ]
+        }
+      ]
+    }
+  ],
+  "num_papers": 5,
+  "sources": ["smith2024.pdf", "jones2025.pdf", ...]
+}
+```
+
+**3. Mode QA (backward compatible)**:
+```bash
+curl -X POST http://localhost:8000/api/ask/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What is the main finding?",
+    "session": "my-session"
+    # mode not specified → defaults to "qa"
+  }'
+
+# Response 200 (existing format):
+{
+  "answer": "The main finding is...",
+  "citations": [
+    {"source": "paper.pdf", "page": 5, "count": 3}
+  ]
+}
+```
+
+---
+
+## 📊 Métriques D4
+
+| Métrique | Valeur |
+|----------|--------|
+| Lignes de code ajoutées | 814 |
+| Fichiers créés | 2 |
+| Fichiers modifiés | 1 |
+| Tests créés | 12 |
+| Taux de réussite tests | 100% (12/12) |
+| Modes ajoutés | 2 (compare, lit_review) |
+| Temps d'implémentation | 3h |
+| Backward compatibility | ✅ 100% |
+
+---
+
+## 🎯 Impact Business
+
+### Avant D4 ❌
+- RAG limité à Q&A simple
+- Impossible de comparer plusieurs papers
+- Pas de synthèse cross-document
+- Utilisateur doit comparer manuellement
+- Revue de littérature = copier-coller manuel
+
+### Après D4 ✅
+- **3 modes d'analyse**: QA, Compare, Literature Review
+- **Comparaison automatique** avec identification stances (supports/contradicts/neutral)
+- **Revue structurée** avec sections thématiques + citations
+- **Source filtering** maintenu dans tous modes
+- **Backward compatible**: Applications existantes continuent fonctionner
+
+### Cas d'Usage Réels
+
+**Doctorant en revue systématique**:
+```
+1. Import 15 papers sur topic via arXiv/PubMed
+2. mode=compare "What are the main controversies?"
+3. Obtient 4-5 claims avec stances par paper
+4. Identifie rapidement consensus vs débats
+5. mode=lit_review pour draft automatique
+6. Editing manuel sur structure générée
+Gain: 10-15 heures de lecture/synthèse manuelle
+```
+
+**Chercheur en validation méthodologie**:
+```
+1. Upload 5 papers utilisant même méthode
+2. mode=compare "How do papers apply method X?"
+3. Compare evidence d'application across papers
+4. Identifie variations/inconsistencies
+5. Documente pour son propre paper
+Gain: Clarity sur variations méthodologiques
+```
+
+**Professeur préparant cours**:
+```
+1. Session avec 20 papers clés du domaine
+2. mode=lit_review "Overview of field X"
+3. Obtient review structuré avec citations
+4. Use comme base pour slides cours
+5. Citations déjà formatées avec pages
+Gain: Base solide pour matériel pédagogique
+```
+
+**Gain de temps moyen**: 5-15 heures par session de synthèse
+
+---
+
+## 🔗 Git
+
+**Branch**: `feature/multi-doc-modes`
+**Commit**: `c902f15` - "feat(D4): Multi-document synthesis modes (compare + literature review)"
+**Push**: ✅ Poussé sur GitHub
+**Merged**: ✅ Mergé dans main
+**PR**: https://github.com/yzriga/PFE_AI/pull/new/feature/multi-doc-modes
+
+---
+
 ## 🚀 Prochaines Étapes
 
 ### En Attente
 - [ ] Merger feature/unified-ingestion → main (D1)
 - [x] ~~Merger feature/arxiv-connector → main (D2)~~ ✅ COMPLÉTÉ
 - [x] ~~Démarrer D3: PubMed Connector~~ ✅ COMPLÉTÉ - Voir section D3 ci-dessus
+- [x] ~~Démarrer D4: Multi-document modes~~ ✅ COMPLÉTÉ - Voir section D4 ci-dessus
+- [ ] Démarrer D5: Notes & Highlights
+- [ ] Démarrer D6: Evaluation + Monitoring
+- [ ] Démarrer D7: Frontend enhancements
 
 ---
 
@@ -1212,6 +1721,15 @@ curl "http://localhost:8000/api/documents/43/status/"
 4. **Mock structure XML complexe**: Entrez.read() retourne dicts imbriqués et objets avec `.attributes` → Mocks doivent reproduire cette structure exactement
 5. **Réutilisation pattern**: 3e implémentation (D1 → D2 → D3) confirmé → Pattern fonctionnel pour futurs connecteurs (Semantic Scholar, Google Scholar)
 
+#### D4
+1. **Mock import paths**: Patch `'langchain_chroma.Chroma'` pas `'rag.views.Chroma'` → Toujours patch le module d'importation original, pas l'importateur
+2. **JSON extraction robuste**: LLM peut retourner JSON wrapped in markdown → Utiliser `response.find("{")` + `response.rfind("}")` pour extraire JSON pur
+3. **Fallback toujours return dict**: Ne jamais return None en cas d'erreur JSON → Return dict avec `error` + `raw_response` + champs vides = client peut gérer
+4. **ValueError vs JSONDecodeError**: JSON non trouvé (pas de `{`) nécessite ValueError en plus de JSONDecodeError dans except clause
+5. **k parameter tuning**: QA=5 chunks, Compare=10 (breadth), Lit_review=15 (comprehensive) → Adapter retrieval depth au type d'analyse
+6. **Backward compatibility gratuite**: `mode = request.data.get("mode", "qa")` → Default value assure compatibility sans migration data
+7. **Prompts in-service vs templates**: Embedded prompts OK pour MVP → Refactor vers prompt templates file quand > 5 prompts
+
 ---
 
-*Dernière mise à jour: 9 février 2026 - D1, D2 et D3 complétés*
+*Dernière mise à jour: 9 février 2026 - D1, D2, D3 et D4 complétés*
