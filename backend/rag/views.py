@@ -114,12 +114,19 @@ def ask_question(request):
 @api_view(["POST"])
 def upload_pdf(request):
     """
-    Upload a PDF file and ingest it into a session-scoped vector database.
+    Upload a PDF file and trigger async ingestion.
 
     Expected form-data:
     - file: PDF
     - session: Session name (optional)
+    
+    Returns immediately with 202 Accepted and processing starts in background.
     """
+    import threading
+    from django.core.files.storage import default_storage
+    from django.core.files.base import ContentFile
+    from rag.services.ingestion import IngestionService
+    
     file = request.FILES.get("file")
     session_name = request.POST.get("session")
 
@@ -155,38 +162,48 @@ def upload_pdf(request):
     )
 
     full_path = Path(default_storage.path(saved_path))
-    original_filename = file.name  # THIS is what users see
-
-
-    # Register document in relational DB
+    
+    # Normalize filename
     normalized = normalize_filename(file.name)
 
-    document, _ = Document.objects.get_or_create(
+    # Register document in relational DB with UPLOADED status
+    document, created = Document.objects.get_or_create(
         filename=normalized,
         session=session
     )
+    
+    # Reset status if re-uploading
+    if not created:
+        document.status = 'UPLOADED'
+        document.error_message = None
+        document.processing_started_at = None
+        document.processing_completed_at = None
+        document.save()
 
-    # Ingest into session-scoped vector store
-    ingest_pdf(
-        path=str(full_path),
-        session_name=session.name,
-        document=document
-    )
+    # Trigger async ingestion
+    def ingest_in_background():
+        service = IngestionService()
+        service.ingest_document(document.id, str(full_path))
+    
+    thread = threading.Thread(target=ingest_in_background, daemon=True)
+    thread.start()
 
     return Response(
         {
-            "message": "PDF uploaded and ingested successfully",
+            "message": "PDF upload initiated. Processing in background.",
+            "document_id": document.id,
             "filename": file.name,
-            "session": session.name
+            "session": session.name,
+            "status": document.status
         },
-        status=status.HTTP_201_CREATED
+        status=status.HTTP_202_ACCEPTED
     )
 
 
 @api_view(["GET"])
 def list_pdfs(request):
     """
-    List PDFs available in a session.
+    List PDFs available in a session with their processing status.
     """
     session_name = request.GET.get("session")
 
@@ -202,14 +219,16 @@ def list_pdfs(request):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    # pdfs = session.documents.values_list("filename", flat=True)
-
     pdfs = session.documents.values(
+        "id",
         "filename",
         "title",
-        "abstract"
+        "abstract",
+        "status",
+        "page_count",
+        "uploaded_at",
+        "error_message"
     )
-
 
     return Response(
         {
@@ -218,6 +237,46 @@ def list_pdfs(request):
         },
         status=status.HTTP_200_OK
     )
+
+
+@api_view(["GET"])
+def document_status(request, document_id):
+    """
+    Get detailed status of a document ingestion.
+    
+    Returns processing status, timestamps, and any error messages.
+    """
+    try:
+        document = Document.objects.get(id=document_id)
+        
+        processing_time = None
+        if document.processing_started_at and document.processing_completed_at:
+            processing_time = (
+                document.processing_completed_at - document.processing_started_at
+            ).total_seconds()
+        
+        return Response({
+            "document_id": document.id,
+            "filename": document.filename,
+            "session": document.session.name,
+            "status": document.status,
+            "uploaded_at": document.uploaded_at,
+            "processing_started_at": document.processing_started_at,
+            "processing_completed_at": document.processing_completed_at,
+            "processing_time_seconds": processing_time,
+            "error_message": document.error_message,
+            "metadata": {
+                "title": document.title,
+                "abstract": document.abstract,
+                "page_count": document.page_count
+            }
+        }, status=status.HTTP_200_OK)
+        
+    except Document.DoesNotExist:
+        return Response(
+            {"error": "Document not found"},
+            status=status.HTTP_404_NOT_FOUND
+        )
 
 
 @api_view(["POST"])
