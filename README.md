@@ -19,12 +19,24 @@ This project allows users to:
   - Vector store (Chroma)
 - No cross-session contamination
 
+###  Asynchronous document processing ✨ NEW
+- **Non-blocking uploads**: Upload returns `202 Accepted` immediately
+- **Background ingestion**: PDF processing happens asynchronously in separate threads
+- **Status tracking**: Real-time monitoring with status transitions:
+  - `UPLOADED`: File received, queued for processing
+  - `PROCESSING`: PDF being extracted, chunked, and indexed
+  - `INDEXED`: Ready for querying
+  - `FAILED`: Error occurred (with detailed error message)
+- **Processing metrics**: Track processing start/end times and duration
+- **Robust error handling**: Failed ingestions can be retried via `reingest_document()`
+
 ###  Robust PDF ingestion
 - PDFs are split into semantic chunks
 - Each chunk is enriched with:
   - `source` (filename)
   - `page` number
 - Stored in a **session-scoped Chroma vector store**
+- Comprehensive logging at each processing step
 
 ###  Strict RAG pipeline
 - Semantic retrieval via `nomic-embed-text`
@@ -121,31 +133,75 @@ python manage.py runserver
 Backend available at: http://127.0.0.1:8000
 
 ## API Usage
-### Upload PDFs
+
+### Upload PDFs (Asynchronous)
 ```
 POST /api/upload/
 ```
 
 Form-data:
-- file: PDF
-- session: Session name
+- `file`: PDF file
+- `session`: Session name
+
+**Response**: `202 Accepted`
+```json
+{
+  "message": "PDF upload initiated. Processing in background.",
+  "document_id": 1,
+  "filename": "paper.pdf",
+  "session": "SessionA",
+  "status": "UPLOADED"
+}
+```
+
+The document is processed asynchronously in the background. Status transitions: 
+`UPLOADED` → `PROCESSING` → `INDEXED` (or `FAILED` on error)
+
+### Check Document Processing Status
+```
+GET /api/documents/<document_id>/status/
+```
+
+**Response**:
+```json
+{
+  "document_id": 1,
+  "filename": "paper.pdf",
+  "session": "SessionA",
+  "status": "INDEXED",
+  "uploaded_at": "2026-02-08T20:13:57Z",
+  "processing_started_at": "2026-02-08T20:13:57Z",
+  "processing_completed_at": "2026-02-08T20:13:58Z",
+  "processing_time_seconds": 1.55,
+  "error_message": null,
+  "metadata": {
+    "title": "...",
+    "abstract": "...",
+    "page_count": 14
+  }
+}
+```
 
 ### List PDFs in a session
 ```
 GET /api/pdfs/?session=SessionA
 ```
 
+Returns all documents with their current status (`UPLOADED`, `PROCESSING`, `INDEXED`, `FAILED`)
+
 ### Ask a question
 ```
 POST /api/ask/
 ```
-```
+```json
 {
   "question": "What is this paper about?",
   "session": "SessionA",
   "sources": ["paper1.pdf"]
 }
 ```
+
+**Note**: Only documents with `status: INDEXED` can be queried.
 
 ⚠️ Known Design Choice
 

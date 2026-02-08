@@ -10,6 +10,13 @@ class Session(models.Model):
 
 
 class Document(models.Model):
+    STATUS_CHOICES = [
+        ('UPLOADED', 'Uploaded'),
+        ('PROCESSING', 'Processing'),
+        ('INDEXED', 'Indexed'),
+        ('FAILED', 'Failed'),
+    ]
+    
     filename = models.CharField(max_length=255)
     session = models.ForeignKey(
         Session,
@@ -18,15 +25,22 @@ class Document(models.Model):
     )
     uploaded_at = models.DateTimeField(auto_now_add=True)
 
+    # Metadata extracted from PDF
     title = models.TextField(null=True, blank=True)
     abstract = models.TextField(null=True, blank=True)
     page_count = models.IntegerField(null=True, blank=True)
+    
+    # Processing status tracking
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='UPLOADED')
+    processing_started_at = models.DateTimeField(null=True, blank=True)
+    processing_completed_at = models.DateTimeField(null=True, blank=True)
+    error_message = models.TextField(null=True, blank=True)
 
     class Meta:
         unique_together = ("filename", "session")
 
     def __str__(self):
-        return f"{self.filename} ({self.session.name})"
+        return f"{self.filename} ({self.session.name}) - {self.status}"
 
 
 class Question(models.Model):
