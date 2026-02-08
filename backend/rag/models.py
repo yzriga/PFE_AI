@@ -217,3 +217,97 @@ class HighlightEmbedding(models.Model):
     
     def __str__(self):
         return f"Embedding for highlight {self.highlight.id} ({self.embedding_id})"
+
+
+class RunLog(models.Model):
+    """
+    Logs for every RAG query execution.
+    Enables monitoring, debugging, and evaluation of system performance.
+    
+    Tracks:
+    - Query parameters (question, mode, sources)
+    - Performance metrics (latency, tokens)
+    - Retrieved context (chunks with scores)
+    - Errors if any
+    """
+    MODE_CHOICES = [
+        ('qa', 'Question Answering'),
+        ('compare', 'Compare Papers'),
+        ('lit_review', 'Literature Review'),
+    ]
+    
+    # Query context
+    session = models.ForeignKey(
+        Session,
+        on_delete=models.CASCADE,
+        related_name='run_logs',
+        help_text="Session in which query was executed"
+    )
+    question = models.ForeignKey(
+        Question,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='run_logs',
+        help_text="Question model if created (nullable for eval runs)"
+    )
+    question_text = models.TextField(
+        help_text="Question text (denormalized for query even if Question deleted)"
+    )
+    mode = models.CharField(
+        max_length=20,
+        choices=MODE_CHOICES,
+        default='qa',
+        help_text="RAG mode used for this query"
+    )
+    sources = models.JSONField(
+        default=list,
+        help_text="List of document filenames used as filters (empty = all docs)"
+    )
+    
+    # Performance metrics
+    latency_ms = models.IntegerField(
+        help_text="End-to-end query latency in milliseconds"
+    )
+    retrieved_chunks = models.JSONField(
+        help_text="List of retrieved chunks with metadata: [{doc, page, chunk_id, score, text_preview}]"
+    )
+    prompt_tokens = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Number of tokens in prompt (if tracked)"
+    )
+    completion_tokens = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Number of tokens in completion (if tracked)"
+    )
+    
+    # Error tracking
+    error_type = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+        help_text="Error class name if query failed (e.g., 'ChromaConnectionError')"
+    )
+    error_message = models.TextField(
+        null=True,
+        blank=True,
+        help_text="Full error message/traceback"
+    )
+    
+    # Metadata
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['session', 'created_at']),
+            models.Index(fields=['mode']),
+            models.Index(fields=['error_type']),
+            models.Index(fields=['created_at']),
+        ]
+    
+    def __str__(self):
+        status = f"ERROR: {self.error_type}" if self.error_type else f"{self.latency_ms}ms"
+        return f"[{self.mode.upper()}] {self.question_text[:40]}... ({status})"

@@ -1,4 +1,5 @@
 from pathlib import Path
+import time
 
 from django.core.files.storage import default_storage
 from django.core.files.base import ContentFile
@@ -12,6 +13,7 @@ from .utils import get_default_session, normalize_filename
 from .query import ask_with_citations, retrieve_paper_overview
 from .ingest import ingest_pdf
 from .services.synthesis import SynthesisService
+from .services.metrics_service import MetricsService
 
 from .router import is_title_question, is_about_paper_question, is_page_count_question
 
@@ -55,6 +57,13 @@ def ask_question(request):
         text=question_text,
         session=session
     )
+    
+    # Start timing for metrics
+    start_time = time.time()
+    metrics_service = MetricsService()
+    retrieved_chunks = []
+    result = None
+    error = None
 
     try:
         # ===== MULTI-DOCUMENT MODES (NEW) =====
@@ -78,6 +87,18 @@ def ask_question(request):
             else:
                 docs = vectordb.similarity_search(question_text, k=10)
             
+            # Extract chunk metadata for logging
+            retrieved_chunks = [
+                {
+                    "doc": d.metadata.get("source", "unknown"),
+                    "page": d.metadata.get("page", 0),
+                    "chunk_id": f"chunk_{i}",
+                    "score": 0.0,  # Chroma doesn't return scores in similarity_search
+                    "text_preview": d.page_content[:100]
+                }
+                for i, d in enumerate(docs)
+            ]
+            
             # Use synthesis service
             synthesis = SynthesisService()
             result = synthesis.compare_papers(
@@ -91,6 +112,18 @@ def ask_question(request):
                 question=question_obj,
                 text=f"[COMPARE MODE] {result.get('topic', question_text)}",
                 citations=[]  # Citations embedded in claims structure
+            )
+            
+            # Log metrics
+            latency_ms = int((time.time() - start_time) * 1000)
+            metrics_service.log_query(
+                session=session,
+                question=question_obj,
+                question_text=question_text,
+                mode=mode,
+                sources=sources,
+                latency_ms=latency_ms,
+                retrieved_chunks=retrieved_chunks
             )
             
             return Response(result, status=status.HTTP_200_OK)
@@ -115,6 +148,18 @@ def ask_question(request):
             else:
                 docs = vectordb.similarity_search(question_text, k=15)
             
+            # Extract chunk metadata for logging
+            retrieved_chunks = [
+                {
+                    "doc": d.metadata.get("source", "unknown"),
+                    "page": d.metadata.get("page", 0),
+                    "chunk_id": f"chunk_{i}",
+                    "score": 0.0,
+                    "text_preview": d.page_content[:100]
+                }
+                for i, d in enumerate(docs)
+            ]
+            
             # Use synthesis service
             synthesis = SynthesisService()
             result = synthesis.generate_literature_review(
@@ -128,6 +173,18 @@ def ask_question(request):
                 question=question_obj,
                 text=f"[LIT_REVIEW] {result.get('title', question_text)}",
                 citations=[]  # Citations embedded in sections structure
+            )
+            
+            # Log metrics
+            latency_ms = int((time.time() - start_time) * 1000)
+            metrics_service.log_query(
+                session=session,
+                question=question_obj,
+                question_text=question_text,
+                mode=mode,
+                sources=sources,
+                latency_ms=latency_ms,
+                retrieved_chunks=retrieved_chunks
             )
             
             return Response(result, status=status.HTTP_200_OK)
@@ -183,10 +240,48 @@ def ask_question(request):
                 text=result["answer"],
                 citations=result["citations"]
             )
+            
+            # Extract chunks from citations for logging
+            retrieved_chunks = [
+                {
+                    "doc": citation["source"],
+                    "page": citation["page"],
+                    "chunk_id": f"chunk_{i}",
+                    "score": 0.0,
+                    "text_preview": ""  # Not available in citations
+                }
+                for i, citation in enumerate(result.get("citations", []))
+            ]
+            
+            # Log metrics
+            latency_ms = int((time.time() - start_time) * 1000)
+            metrics_service.log_query(
+                session=session,
+                question=question_obj,
+                question_text=question_text,
+                mode=mode,
+                sources=sources,
+                latency_ms=latency_ms,
+                retrieved_chunks=retrieved_chunks
+            )
 
             return Response(result, status=status.HTTP_200_OK)
 
     except Exception as e:
+        # Log error metrics
+        error = e
+        latency_ms = int((time.time() - start_time) * 1000)
+        metrics_service.log_query(
+            session=session,
+            question=question_obj,
+            question_text=question_text,
+            mode=mode,
+            sources=sources,
+            latency_ms=latency_ms,
+            retrieved_chunks=retrieved_chunks,
+            error=error
+        )
+        
         # 🔒 GUARANTEED JSON ERROR
         return Response(
             {"error": str(e)},
@@ -478,3 +573,58 @@ def delete_pdf(request):
         {"message": f"Document '{filename}' deleted successfully"},
         status=status.HTTP_200_OK
     )
+
+
+@api_view(["GET"])
+def metrics_summary(request):
+    """
+    Get aggregated metrics for monitoring dashboard.
+    
+    Query params:
+    - since: Number of days to look back (default: 7)
+    
+    Example: /api/metrics/summary?since=30
+    
+    Returns:
+    {
+        "period": {"start": "...", "end": "...", "days": 7},
+        "queries": {
+            "total": 150,
+            "by_mode": {"qa": 100, "compare": 30, "lit_review": 20},
+            "latency_avg": 612,
+            "latency_p50": 523,
+            "latency_p95": 1240
+        },
+        "errors": {
+            "count": 5,
+            "rate": 0.033,
+            "top_errors": [{"type": "ChromaConnectionError", "count": 3}]
+        },
+        "retrieval": {
+            "avg_chunks_per_query": 5.2,
+            "avg_score": 0.78
+        },
+        "sessions": {
+            "active_count": 12
+        }
+    }
+    """
+    since_days = request.GET.get("since", "7")
+    
+    try:
+        since_days = int(since_days)
+        if since_days <= 0:
+            return Response(
+                {"error": "Parameter 'since' must be a positive integer"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    except ValueError:
+        return Response(
+            {"error": "Parameter 'since' must be an integer"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    
+    metrics_service = MetricsService()
+    summary = metrics_service.get_summary(since_days=since_days)
+    
+    return Response(summary, status=status.HTTP_200_OK)

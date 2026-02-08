@@ -7,7 +7,8 @@ from .views import (
     create_session, 
     delete_pdf, 
     list_sessions, 
-    delete_session
+    delete_session,
+    metrics_summary
 )
 from .views_arxiv import (
     arxiv_search,
@@ -55,4 +56,7 @@ urlpatterns = [
     path("highlights/<int:highlight_id>/", get_highlight, name="get_highlight"),
     path("highlights/<int:highlight_id>/update/", update_highlight, name="update_highlight"),
     path("highlights/<int:highlight_id>/delete/", delete_highlight, name="delete_highlight"),
+    
+    # Metrics endpoint
+    path("metrics/summary/", metrics_summary, name="metrics_summary"),
 ]
