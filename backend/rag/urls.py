@@ -14,6 +14,12 @@ from .views_arxiv import (
     arxiv_import,
     arxiv_metadata
 )
+from .views_pubmed import (
+    pubmed_search,
+    pubmed_import,
+    pubmed_metadata,
+    pubmed_check_pmc
+)
 
 urlpatterns = [
     path("ask/", ask_question, name="ask_question"),
@@ -29,4 +35,10 @@ urlpatterns = [
     path("arxiv/search/", arxiv_search, name="arxiv_search"),
     path("arxiv/import/", arxiv_import, name="arxiv_import"),
     path("arxiv/metadata/<str:arxiv_id>/", arxiv_metadata, name="arxiv_metadata"),
+    
+    # PubMed endpoints
+    path("pubmed/search/", pubmed_search, name="pubmed_search"),
+    path("pubmed/import/", pubmed_import, name="pubmed_import"),
+    path("pubmed/metadata/<str:pmid>/", pubmed_metadata, name="pubmed_metadata"),
+    path("pubmed/check-pmc/<str:pmid>/", pubmed_check_pmc, name="pubmed_check_pmc"),
 ]
