@@ -43,6 +43,67 @@ class Document(models.Model):
         return f"{self.filename} ({self.session.name}) - {self.status}"
 
 
+class PaperSource(models.Model):
+    """
+    External paper metadata from sources like arXiv, PubMed, DOI, etc.
+    Links to a Document after successful import.
+    """
+    SOURCE_TYPES = [
+        ('arxiv', 'arXiv'),
+        ('pubmed', 'PubMed'),
+        ('doi', 'DOI'),
+        ('manual', 'Manual Upload'),
+    ]
+    
+    document = models.OneToOneField(
+        Document,
+        on_delete=models.CASCADE,
+        related_name='paper_source',
+        null=True,
+        blank=True,
+        help_text="Linked document after successful import"
+    )
+    
+    # Source metadata
+    source_type = models.CharField(max_length=20, choices=SOURCE_TYPES)
+    external_id = models.CharField(
+        max_length=255,
+        help_text="arXiv ID (e.g., 2411.04920v4), PubMed ID, DOI, etc."
+    )
+    
+    # Paper metadata
+    title = models.TextField()
+    authors = models.TextField(help_text="Comma-separated author names")
+    abstract = models.TextField(blank=True)
+    published_date = models.DateField(null=True, blank=True)
+    
+    # URLs
+    pdf_url = models.URLField(max_length=500, blank=True)
+    entry_url = models.URLField(
+        max_length=500,
+        blank=True,
+        help_text="Link to paper page (arXiv abstract, PubMed entry, etc.)"
+    )
+    
+    # Metadata
+    created_at = models.DateTimeField(auto_now_add=True)
+    imported = models.BooleanField(
+        default=False,
+        help_text="Whether the PDF was successfully imported as a Document"
+    )
+    
+    class Meta:
+        unique_together = ('source_type', 'external_id')
+        indexes = [
+            models.Index(fields=['source_type', 'external_id']),
+            models.Index(fields=['imported']),
+        ]
+    
+    def __str__(self):
+        status = "✓ Imported" if self.imported else "⊗ Not imported"
+        return f"[{self.source_type.upper()}] {self.title[:50]}... {status}"
+
+
 class Question(models.Model):
     text = models.TextField()
     session = models.ForeignKey(
