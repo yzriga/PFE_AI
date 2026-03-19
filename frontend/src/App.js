@@ -535,6 +535,26 @@ function App() {
         textPreview = payload?.text || "";
         contentType = payload?.content_type || "pdf";
         precisePhrase = cleanSnippet ? choosePrecisePhrase(cleanSnippet, payload?.text || "") : "";
+        const resolvedPageCount = Number(payload?.page_count || doc?.page_count || 1);
+        setPdfViewer({
+          filename,
+          page,
+          snippet: cleanSnippet,
+          viewerUrl: buildPdfViewerUrl({
+            docUrl,
+            page,
+            snippet: cleanSnippet,
+            precisePhrase,
+            shouldUsePdfViewer: isPdfFilename && !isSummaryOnly && contentType === "pdf",
+          }),
+          textPreview,
+          mode: isPdfFilename && !isSummaryOnly && contentType === "pdf" ? "pdf" : "text",
+          precisePhrase,
+          startOffset,
+          endOffset,
+          pageCount: resolvedPageCount,
+        });
+        return;
       } catch (err) {
         console.error("Failed fetching page text for precise highlight", err);
       }
@@ -559,7 +579,7 @@ function App() {
       precisePhrase,
       startOffset,
       endOffset,
-      pageCount: doc?.page_count || 1,
+      pageCount: Number(doc?.page_count || 1),
     });
   };
 

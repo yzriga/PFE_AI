@@ -177,6 +177,7 @@ def document_page_text(request, document_id):
                     "document_id": document.id,
                     "filename": document.filename,
                     "page": page,
+                    "page_count": len(reader.pages),
                     "text": text,
                     "content_type": "pdf",
                 },
@@ -213,6 +214,7 @@ def document_page_text(request, document_id):
             "document_id": document.id,
             "filename": document.filename,
             "page": page,
+            "page_count": document.page_count or 1,
             "text": "\n".join(content_parts).strip(),
             "content_type": "text",
             "source_type": source_type,
@@ -812,6 +814,7 @@ def list_pdfs(request):
             "entry_url": getattr(getattr(document, "paper_source", None), "entry_url", ""),
             "title": document.title,
             "abstract": document.abstract,
+            "page_count": document.page_count,
             "status": document.status,
             "error_message": document.error_message,
         }

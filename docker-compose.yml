@@ -10,7 +10,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5433:5432"
+      - "5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U navigator"]
       interval: 5s
@@ -41,16 +41,35 @@ services:
     environment:
       OLLAMA_HOST: http://ollama:11434
       OLLAMA_PULL_MODELS: ${OLLAMA_PULL_MODELS:-mistral nomic-embed-text}
+      OLLAMA_PULL_RETRIES: ${OLLAMA_PULL_RETRIES:-3}
+      OLLAMA_PULL_RETRY_DELAY: ${OLLAMA_PULL_RETRY_DELAY:-5}
     restart: "no"
     volumes:
       - ollama_data:/root/.ollama
-    entrypoint: ["/bin/sh", "-c"]
-    command: |
-      set -e
-      for model in $$OLLAMA_PULL_MODELS; do
-        echo "Pulling model: $$model"
-        ollama pull "$$model"
-      done
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        for model in $$OLLAMA_PULL_MODELS; do
+          echo "Pulling model: $$model"
+          attempt=1
+          pulled=0
+          while [ "$$attempt" -le "$$OLLAMA_PULL_RETRIES" ]; do
+            if ollama pull "$$model"; then
+              pulled=1
+              break
+            fi
+            echo "Pull failed for $$model ($$attempt/$$OLLAMA_PULL_RETRIES)"
+            attempt=$$((attempt + 1))
+            if [ "$$attempt" -le "$$OLLAMA_PULL_RETRIES" ]; then
+              sleep "$$OLLAMA_PULL_RETRY_DELAY"
+            fi
+          done
+          if [ "$$pulled" -ne 1 ]; then
+            echo "Warning: could not pre-pull $$model. Backend services will retry on demand."
+          fi
+        done
 
   # ---- Django backend ----
   backend:
@@ -65,8 +84,6 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
-      ollama-init:
-        condition: service_completed_successfully
     environment:
       SECRET_KEY: ${SECRET_KEY:-django-insecure-4s#0ucylvvqnz@25y1-@b8-l#^wutb!doduq2odkl3@=iop1ja}
       DEBUG: ${DEBUG:-True}
@@ -107,8 +124,6 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
-      ollama-init:
-        condition: service_completed_successfully
     environment:
       SECRET_KEY: ${SECRET_KEY:-django-insecure-4s#0ucylvvqnz@25y1-@b8-l#^wutb!doduq2odkl3@=iop1ja}
       DEBUG: ${DEBUG:-True}

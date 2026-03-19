@@ -58,6 +58,161 @@ class SynthesisService:
         parsed["claims"] = normalized_claims
         return parsed
 
+    def _build_compare_fallback(
+        self,
+        question: str,
+        docs_by_source: Dict[str, List[Any]],
+    ) -> Dict[str, Any]:
+        """
+        Build a question-aware comparison when strict compare JSON fails.
+        """
+        paper_summaries = [
+            self._summarize_paper_for_compare(question, source, source_docs)
+            for source, source_docs in docs_by_source.items()
+        ]
+        claims = self._synthesize_compare_fallback_claims(question, paper_summaries, docs_by_source)
+
+        return {
+            "claims": claims,
+            "message": (
+                "Returned a simplified comparison because the model did not produce valid "
+                "structured compare JSON. The claims below are synthesized from question-focused "
+                "paper summaries and grounded in the retrieved snippets."
+            ),
+        }
+
+    def _summarize_paper_for_compare(
+        self,
+        question: str,
+        source: str,
+        source_docs: List[Any],
+    ) -> Dict[str, str]:
+        context_lines = []
+        for doc in source_docs[:4]:
+            raw_page = doc.metadata.get("page", "?")
+            page = raw_page + 1 if isinstance(raw_page, int) else raw_page
+            snippet = re.sub(r"\s+", " ", (doc.page_content or "")).strip()
+            context_lines.append(f"[Page {page}] {snippet}")
+        context = "\n".join(context_lines)
+
+        prompt = f"""You are preparing a comparison note for a single paper.
+
+Question:
+{question}
+
+Paper filename: {source}
+
+Using ONLY the snippets below, write three short fields focused on the question.
+
+Return plain text with exactly these labels:
+QUESTION_FOCUS: one sentence explaining the paper's angle on the question
+METHOD_OR_EVIDENCE: one sentence on the relevant method, representation, or evidence
+TAKEAWAY: one sentence on the most important comparison-worthy takeaway
+
+Snippets:
+{context}
+"""
+        response = self._invoke_text(prompt)
+        parsed = self._parse_tagged_block(
+            response,
+            ["QUESTION_FOCUS", "METHOD_OR_EVIDENCE", "TAKEAWAY"],
+        )
+        if not parsed["QUESTION_FOCUS"] or not parsed["METHOD_OR_EVIDENCE"] or not parsed["TAKEAWAY"]:
+            fallback = self._fallback_paper_summary(source, source_docs)
+            return {
+                "paper_id": source,
+                "question_focus": fallback["focus"],
+                "method_or_evidence": fallback["methods"],
+                "takeaway": fallback["contributions"],
+            }
+
+        return {
+            "paper_id": source,
+            "question_focus": parsed["QUESTION_FOCUS"],
+            "method_or_evidence": parsed["METHOD_OR_EVIDENCE"],
+            "takeaway": parsed["TAKEAWAY"],
+        }
+
+    def _build_compare_evidence(self, source_docs: List[Any], limit: int = 2) -> List[Dict[str, Any]]:
+        evidence = []
+        for doc in source_docs[:limit]:
+            raw_page = doc.metadata.get("page", "?")
+            page = raw_page + 1 if isinstance(raw_page, int) else raw_page
+            excerpt = re.sub(r"\s+", " ", (doc.page_content or "")).strip()[:280]
+            evidence.append({
+                "page": page,
+                "excerpt": excerpt,
+            })
+        return evidence
+
+    def _synthesize_compare_fallback_claims(
+        self,
+        question: str,
+        paper_summaries: List[Dict[str, str]],
+        docs_by_source: Dict[str, List[Any]],
+    ) -> List[Dict[str, Any]]:
+        summaries_text = "\n".join(
+            [
+                (
+                    f"- {summary['paper_id']}\n"
+                    f"  Focus: {summary['question_focus']}\n"
+                    f"  Method/Evidence: {summary['method_or_evidence']}\n"
+                    f"  Takeaway: {summary['takeaway']}"
+                )
+                for summary in paper_summaries
+            ]
+        )
+        prompt = f"""You are writing a simplified comparison between papers.
+
+Question:
+{question}
+
+Paper summaries:
+{summaries_text}
+
+Task:
+Write 2 to 4 bullet claims that directly answer the question.
+
+Rules:
+- Every bullet must mention at least one filename.
+- Prefer contrasts between papers over isolated summaries.
+- Keep each bullet to one sentence.
+- Do not output anything except bullets.
+"""
+        response = self._invoke_text(prompt)
+        bullets = self._parse_bullets(response)
+        if not bullets:
+            bullets = self._fallback_section_bullets("important_differences", [
+                {
+                    "paper_id": summary["paper_id"],
+                    "focus": summary["question_focus"],
+                    "methods": summary["method_or_evidence"],
+                    "contributions": summary["takeaway"],
+                    "limitations": "",
+                }
+                for summary in paper_summaries
+            ])
+
+        claims = []
+        known_sources = [summary["paper_id"] for summary in paper_summaries]
+        for bullet in bullets[:4]:
+            mentioned_sources = [source for source in known_sources if source in bullet]
+            if not mentioned_sources:
+                mentioned_sources = known_sources[:]
+
+            papers = []
+            for source in mentioned_sources:
+                papers.append(
+                    {
+                        "paper_id": source,
+                        "stance": "supports",
+                        "evidence": self._build_compare_evidence(docs_by_source.get(source, []), limit=2),
+                    }
+                )
+            claims.append({"claim": bullet, "papers": papers})
+
+        return claims
+
     def _format_literature_review(self, topic: str, parsed: Dict[str, Any]) -> str:
         lines = [
             "1. Scope of Review",
@@ -505,6 +660,7 @@ Output your analysis in the following JSON format:
 If only one paper is provided in the context, clearly state that in a "message" field in your JSON, but still try to provide claims from that single paper. However, if multiple papers are present, you MUST compare them.
 
 Include 3-5 major claims. Focus on contrasting findings.
+Return JSON only. Do not wrap it in markdown fences. Use short excerpts.
 
 JSON OUTPUT:
 """
@@ -521,6 +677,9 @@ JSON OUTPUT:
             )
             repaired = self.llm.invoke(repair_prompt)
             parsed = self._parse_compare_json(repaired)
+
+        if parsed is None:
+            parsed = self._build_compare_fallback(question, docs_by_source)
 
         if parsed is None:
             return {

@@ -1,512 +1,422 @@
 # Scientific Research Navigator
 
-Scientific Research Navigator is a session-scoped research workspace for scientific papers.
+> Un espace de travail intelligent, local et souverain pour la recherche scientifique.  
+> Basé sur RAG (Retrieval-Augmented Generation), Mistral 7B et un pipeline multi-provider.
 
-## Quick Start For Demo / Delivery
+**Auteur :** Aymane KJAOUJ - Mohamed OUALGHAZI - Wiame RAKI - Yahia ZRIGA · **Date :** Mars 2026 · **Contexte :** Projet de Fin d'Études (PFE)
 
-This repository is now set up so the application can be launched with a single command using Docker Compose.
+---
 
-### Recommended launch path
+## Table des matières
 
-Windows PowerShell:
+1. [Description du projet](#1-description-du-projet)
+2. [Architecture et choix techniques](#2-architecture-et-choix-techniques)
+3. [Instructions d'installation et d'exécution](#3-instructions-dinstallation-et-dexécution)
+4. [Résultats et performances](#4-résultats-et-performances)
+5. [Analyse critique](#5-analyse-critique)
+6. [Améliorations futures](#6-améliorations-futures)
 
+---
+
+## 1. Description du projet
+
+### Contexte et problématique
+
+La littérature scientifique croît à un rythme exponentiel. Les chercheurs font face à un paradoxe : plus les outils d'accès aux publications se multiplient, plus la fragmentation devient un obstacle. On utilise un portail pour trouver des articles, un lecteur PDF séparé pour les lire, un assistant IA encore différent pour les analyser - et aucun de ces outils ne communique.
+
+**Les problèmes concrets :**
+- Aucun espace de travail unifié pour importer, lire, interroger et synthétiser des articles
+- Impossibilité de poser des questions ancrées dans ses propres sources avec preuve de citation
+- Perte d'isolation entre projets de recherche (mélange des sources et des contextes)
+- Dépendance à des services cloud (OpenAI, etc.) pour les fonctionnalités IA - problème de confidentialité et de coût
+
+### Objectifs du projet
+
+Scientific Research Navigator vise à offrir :
+- Un **workspace sessionnel** - chaque session de recherche est complètement isolée
+- Un **moteur de QA ancré** - les réponses citent les passages exacts des sources
+- Une **découverte intelligente** - trouver des papiers connexes via graphes de citations
+- Un **déploiement 100% local** - aucune donnée n'est envoyée vers des services tiers
+
+### Valeur ajoutée
+
+| Aspect | Valeur |
+|--------|--------|
+| **Souveraineté des données** | Modèles et index entièrement locaux, zéro API cloud requise |
+| **Ancrage des réponses** | Chaque réponse est tracée jusqu'au chunk source exact |
+| **Isolation par session** | Projets de recherche parfaitement cloisonnés |
+| **Multi-modal** | QA simple, comparaison, revue de littérature, découverte |
+| **Déploiement simplifié** | Une seule commande Docker pour tout démarrer |
+
+---
+
+## 2. Architecture et choix techniques
+
+### Vue d'ensemble du système
+
+```
+┌─────────────────────┐           REST API            ┌───────────────────────┐
+│    React Frontend   │◀─────────────────────────────▶│  Django + DRF Backend  │
+│  (PDF.js · Annot.)  │                               └──────────┬────────────┘
+└─────────────────────┘                                          │
+                                          ┌──────────────────────┼───────────────────────┐
+                                          ▼                      ▼                       ▼
+                               ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
+                               │ RetrievalService │   │  Ollama (Local)  │   │ DiscoveryService  │
+                               │  Chroma + BM25   │   │  Mistral 7B LLM  │   │  Multi-provider   │
+                               └────────┬─────────┘   └────────┬─────────┘   └────────┬─────────┘
+                                        │                      │                       │
+                                        ▼                      ▼                       ▼
+                               ┌──────────────────┐   ┌──────────────────┐   ┌──────────────────┐
+                               │    ChromaDB      │   │   PostgreSQL     │   │   Media/PDFs     │
+                               │  (index/session) │   │  (relationnel)   │   │  (fichiers)      │
+                               └──────────────────┘   └──────────────────┘   └────────┬─────────┘
+                                                                                       │
+                                                                             ┌─────────▼──────────┐
+                                                                             │ OpenAlex · arXiv   │
+                                                                             │ EuropePMC · CORE   │
+                                                                             │ Crossref·Unpaywall │
+                                                                             └────────────────────┘
+```
+
+**Worker asynchrone :** `process_ingestion_jobs` - DB-backed, retryable, backoff exponentiel configurable.
+
+### Pipeline de données
+
+**Ingestion PDF local :**
+1. Chargement via `PyPDFLoader` (LangChain)
+2. Extraction heuristique du titre et de l'abstract (page 1)
+3. Découpage en chunks - `RecursiveCharacterTextSplitter`
+4. Embedding → `nomic-embed-text` → indexation dans ChromaDB
+5. Mise à jour du statut : `INDEXED`
+
+**Import de papier distant :**
+1. Le worker vérifie l'URL : Content-Type + magic bytes `%PDF-`
+2. Si PDF valide → pipeline d'ingestion complet (identique au local)
+3. Sinon → mode *summary-only* (abstract + métadonnées uniquement)
+
+**Stratégie de résolution full-text (ordre de priorité) :**
+
+| Ordre | Source | Domaine privilégié |
+|-------|--------|-------------------|
+| 1 | OpenAlex Content API | Général |
+| 2 | arXiv PDF direct | IA / NLP / RAG |
+| 3 | CORE full-text | Open Access général |
+| 4 | Crossref / Unpaywall | DOI → lien OA |
+| 5 | URL PDF native du provider | Variable |
+| 6 | *Metadata-only (fallback)* | Quand rien ne fonctionne |
+
+### Modèles utilisés
+
+**Embedding - `nomic-embed-text` (baseline dense) :**
+- Modèle léger local via Ollama · vecteurs 768 dimensions
+- Justification : zéro dépendance cloud, confidentialité totale, bonnes performances sur texte scientifique anglais
+
+**Génération - `Mistral 7B` (Deep Learning, Transformer) :**
+- LLM 7 milliards de paramètres, exécuté localement via Ollama
+- Justification : meilleur ratio performance/taille en open-source local, instruction-following fiable pour le QA ancré
+- Paramètres clés : `NUM_CTX` (fenêtre contextuelle), `TEMPERATURE`, `NUM_PREDICT`
+
+**Pipeline RAG hybride :**
+```
+Question → [Multi-query expansion] → Chroma (dense) + BM25 (lexical)
+         → RRF Fusion → [Reranking] → Mistral 7B → Réponse + Citations
+```
+
+### Technologies et outils
+
+| Composant | Technologie | Rôle |
+|-----------|-------------|------|
+| Backend | Django 4 + DRF | API REST, modèles, services |
+| Frontend | React (PDF.js) | Interface utilisateur, visionneuse PDF |
+| LLM local | Ollama + Mistral 7B | Génération de réponses |
+| Embedding | nomic-embed-text | Vectorisation des chunks |
+| Index vectoriel | ChromaDB | Recherche sémantique par session |
+| Base de données | PostgreSQL | Persistance relationnelle |
+| Conteneurisation | Docker Compose | Déploiement reproductible |
+| Tests | Django test runner | Validation des flux API |
+
+---
+
+## 3. Instructions d'installation et d'exécution
+
+### Prérequis
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (ou Docker Engine + Compose)
+- Accès internet lors du premier lancement (téléchargement des images et modèles Ollama)
+- RAM recommandée : **16 Go minimum** (Mistral 7B requiert ~8 Go en CPU)
+- GPU NVIDIA optionnel pour accélérer l'inférence
+
+### Démarrage rapide (recommandé)
+
+**Windows (PowerShell) :**
 ```powershell
 .\start-demo.ps1
 ```
 
-Linux / WSL / macOS:
-
+**Linux / macOS / WSL :**
 ```bash
 ./start-demo.sh
 ```
 
-What this does:
-- starts Postgres, Ollama, backend, worker, and frontend
-- automatically pulls the required Ollama models on first run:
-  - `mistral`
-  - `nomic-embed-text`
-- waits for the backend to become reachable
+Ces scripts démarrent automatiquement tous les services et téléchargent les modèles Ollama au premier lancement :
+- `mistral` (LLM de génération)
+- `nomic-embed-text` (modèle d'embedding)
 
-Application URLs:
-- Frontend: `http://localhost:3000`
-- Backend API: `http://localhost:8000`
-
-To stop the stack:
-
-Windows PowerShell:
-
+**Arrêt :**
 ```powershell
-.\stop-demo.ps1
+.\stop-demo.ps1   # Windows
+./stop-demo.sh    # Linux/macOS
 ```
 
-Linux / WSL / macOS:
+### URLs d'accès
 
-```bash
-./stop-demo.sh
-```
+| Service | URL |
+|---------|-----|
+| Frontend | `http://localhost:3000` |
+| API Backend | `http://localhost:8000/api/` |
 
-### Prerequisites
+### Installation manuelle (sans Docker)
 
-Only these are required for the default delivery path:
-- Docker Desktop (or Docker Engine + Compose)
-- Internet access on first run to pull container images and Ollama models
-
-### First-run note
-
-The first launch can take several minutes because it may need to:
-- build the backend and frontend images
-- initialize Postgres
-- pull Ollama models
-
-Subsequent launches are much faster because Docker volumes persist:
-- database data
-- uploaded media
-- Chroma indexes
-- Ollama models
-
-### Presentation-safe startup checklist
-
-Before the final demo, run this once and verify:
-- `docker compose ps`
-- frontend loads on `http://localhost:3000`
-- backend responds on `http://localhost:8000/api/sessions/`
-- Ollama models are present:
-
-```bash
-docker compose exec ollama ollama list
-```
-
-It combines:
-- A Django + DRF backend for ingestion, retrieval, synthesis, discovery, and persistence
-- Session-scoped Chroma vector indexes for paper and highlight search
-- Ollama-hosted local embedding and generation models
-- A React frontend for document management, grounded QA, comparison, literature review, discovery, and annotation
-
-The application is designed around a practical research workflow:
-1. Create a session
-2. Upload or import papers
-3. Ask grounded questions over selected sources
-4. Discover related papers and import them
-5. Compare papers or generate literature reviews
-6. Save highlights and inspect citations in context
-
-## Current Product Capabilities
-
-### Session Workspace
-- Create, list, switch, and delete sessions
-- Session isolation for:
-  - source list
-  - vector index
-  - chat history
-  - highlights
-  - run logs / metrics
-
-### Source Management
-- Upload local PDFs
-- Import papers from external providers
-- Poll ingestion status
-- Retry failed ingestion/import jobs
-- Delete sources and clean up vector data
-- Filter and search sources in the sidebar
-
-### QA and Synthesis Modes
-- `qa`
-  - grounded question answering over selected papers
-  - citations at chunk level
-  - no-context scholarly discovery mode when no local source is selected
-- `compare`
-  - balanced cross-paper retrieval
-  - structured claim/stance output across selected papers
-- `lit_review`
-  - multi-paper structured review generation
-- `monitoring`
-  - aggregated system metrics from run logs
-
-### Discovery and Import
-- No-source question routing:
-  - if a question is topic-oriented and scholarly, the system performs external discovery and answers from discovered paper metadata
-  - if a question is too broad and generic, the system abstains
-- Related-paper discovery:
-  - OpenAlex citation graph when the source can be resolved to an OpenAlex work
-  - multi-provider fallback discovery when graph seeding is unavailable
-- Import strategy:
-  - OpenAlex for discovery and graph traversal
-  - Europe PMC preferred for biomedical discovery
-  - arXiv preferred for AI / LLM / RAG / transformer-style topics
-  - CORE, OpenAlex content API, DOI-based OA resolution, and provider-native PDFs used to obtain full text where possible
-  - metadata-only ingestion used only when a real PDF cannot be verified and downloaded
-
-### Citation and Evidence UX
-- Retrieved citations include:
-  - `source`
-  - `page`
-  - `chunk_id`
-  - `snippet`
-  - `score`
-- PDF.js viewer opens to the cited page with a best-effort search phrase
-- Metadata-only sources open in a text preview drawer instead of a PDF viewer
-- Citation snippets can be turned into highlights
-
-### Highlights
-- Create highlights from citation snippets
-- Add free-text notes and tags
-- Search highlights semantically with lexical fallback
-- View highlights per document or across the session
-
-### Observability
-- Query run logging
-- Latency metrics
-- Error tracking
-- Grounding and refusal indicators
-- Mode-level monitoring in the frontend dashboard
-
-## How the Application Behaves
-
-### 1. Asking Questions With Selected Sources
-
-When one or more indexed sources are selected in `qa` mode:
-- the backend retrieves relevant chunks from the session's Chroma index
-- optional lexical retrieval and fusion can be used
-- the LLM answers only from retrieved evidence
-- chunk-level citations are returned
-
-Specialized QA shortcuts exist for selected single-source questions such as:
-- title lookup
-- page count lookup
-- "what is this paper about?" style overview questions
-
-If the source is summary-only:
-- the paper-overview path uses metadata directly
-- the answer is still useful, but explicitly limited to metadata/abstract content
-
-### 2. Asking Questions With No Selected Sources
-
-When no source is selected in `qa` mode:
-- the backend classifies the question
-- if it looks like a topic-oriented scholarly query, it triggers external discovery
-- if it is too broad or generic, it abstains
-
-Examples that should trigger discovery:
-- `Explain transformer architecture`
-- `What do recent papers say about retrieval-augmented generation for clinical decision support?`
-- `How are diffusion transformers used in vision?`
-
-Examples that should abstain:
-- `What is intelligence?`
-- `Tell me about life`
-
-Discovery answers:
-- are based on provider metadata and abstracts unless full papers are later imported
-- include suggested papers with provider-aware import buttons
-- may use arXiv first for AI topics and Europe PMC first for biomedical topics
-
-### 3. Importing External Papers
-
-Import behavior is intentionally conservative:
-- only verified direct PDFs are treated as PDFs
-- landing pages are not treated as PDFs
-- downloaded responses are checked to ensure they actually contain PDF content
-- if full text cannot be verified, the paper is ingested in summary-only mode
-
-This avoids fake `.pdf` entries that actually contain HTML or landing-page content.
-
-### 4. Discovering Related Papers
-
-The `Discover` action on a paper does the following:
-- if the paper maps cleanly to OpenAlex, the app fetches:
-  - references
-  - citations
-  - related works
-- if the paper cannot be seeded into OpenAlex, the app falls back to multi-provider discovery based on title and metadata
-
-For related items:
-- the backend tries to preserve the most useful import provider
-- if a related item has an arXiv ID, the import route prefers `arxiv`
-- otherwise OpenAlex or provider-native import paths are used
-
-### 5. Summary-only Sources
-
-Summary-only sources are a fallback, not the preferred path.
-
-They are created when:
-- no verified PDF is available
-- the provider only exposes metadata/abstract content
-- DOI / OA resolution fails
-- PDF download succeeds in URL form but is not actually a PDF
-
-Summary-only sources still support:
-- retrieval
-- metadata-based "what is this paper about?" answers
-- citation drawer text preview
-- highlighting from retrieved snippets
-
-They do not support:
-- true full-page PDF navigation
-- robust deep questions that require methods/results/discussion sections
-
-## Retrieval and Generation Stack
-
-### Local Retrieval
-- Chroma vector similarity retrieval
-- Optional BM25 lexical retrieval
-- Reciprocal Rank Fusion for hybrid merge
-- Optional reranking by overlap heuristics
-- Session-level and source-level filtering
-
-### Generation
-- Ollama local LLM for:
-  - grounded QA
-  - paper comparison
-  - literature review synthesis
-  - discovery-answer synthesis from metadata
-
-### Confidence / Grounding Signals
-- refusal detection
-- insufficient-evidence detection
-- retrieved chunk counts
-- simple confidence scoring
-- retrieval and generation timing
-
-## External Provider Strategy
-
-### Discovery Providers
-- `OpenAlex`
-  - primary discovery provider
-  - citation graph source
-  - related paper traversal
-- `Europe PMC`
-  - biomedical-first discovery provider
-- `arXiv`
-  - preferred for AI / LLM / RAG / transformer topics
-
-### Full-text Resolution Strategy
-For candidate papers, the importer attempts full text in roughly this order:
-- OpenAlex content API when available
-- arXiv PDF if an arXiv ID is known
-- CORE full-text lookup
-- DOI-based OA lookup via Crossref / Unpaywall
-- provider-native PDF URLs
-
-If none of those yield a verified PDF:
-- the source is ingested as summary-only metadata
-
-## Repository Layout
-
-```text
-.
-+-- backend/
-|   +-- config/                      # Django settings and URL root
-|   +-- rag/                         # Models, views, services, tests
-|   +-- requirements.txt
-|   +-- Dockerfile
-+-- frontend/
-|   +-- src/App.js                   # Main application UI
-|   +-- src/api.js                   # Frontend API client
-|   +-- src/App.css                  # UI styling
-|   +-- Dockerfile
-+-- docker-compose.yml
-+-- docker-compose.gpu.yml
-+-- README.md
-+-- TECHNICAL_DOCUMENTATION.md
-```
-
-## Backend API
-
-Base prefix: `/api/`
-
-Core routes:
-- `POST /ask/`
-- `POST /upload/`
-- `GET /pdfs/`
-- `DELETE /delete/`
-- `GET /history/`
-- `POST /session/`
-- `GET /sessions/`
-- `DELETE /session/<session_name>/`
-- `GET /metrics/summary/`
-
-Document routes:
-- `GET /documents/<id>/status/`
-- `GET /documents/<id>/page-text/?page=<1-indexed>`
-- `POST /documents/<id>/retry/`
-
-Highlight routes:
-- `GET|POST /highlights/`
-- `DELETE /highlights/<highlight_id>/`
-- `GET /highlights/search/`
-
-Discovery / import routes:
-- `GET /search/external/`
-- `POST /import/external/`
-- `GET /papers/related/`
-
-Legacy routes still present:
-- `GET /arxiv/search/`
-- `POST /arxiv/import/`
-
-## Data Model
-
-Main tables:
-- `Session`
-- `Document`
-- `PaperSource`
-- `IngestionJob`
-- `Question`
-- `Answer`
-- `RunLog`
-- `Highlight`
-- `HighlightEmbedding`
-
-## Manual Local Setup
-
-### 1. Start Ollama and Pull Models
-
+**1. Modèles Ollama**
 ```bash
 ollama pull mistral
 ollama pull nomic-embed-text
 ```
 
-### 2. Backend
-
+**2. Backend**
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate  # Windows: .\\venv\\Scripts\\activate
+# Windows :
+.\venv\Scripts\activate
+# Linux/macOS :
+source venv/bin/activate
+
 pip install -r requirements.txt
-cp .env.example .env      # Windows: copy .env.example .env
+copy .env.example .env   # Configurer les variables
 python manage.py migrate
 python manage.py runserver
 ```
 
-Backend runs on `http://127.0.0.1:8000`
-
-### 2b. Ingestion Worker
-
-Run the worker in a second shell:
-
+**3. Worker d'ingestion** (dans un second terminal)
 ```bash
 cd backend
-source venv/bin/activate
+source venv/bin/activate  # ou .\venv\Scripts\activate
 python manage.py process_ingestion_jobs
 ```
 
-This worker processes:
-- local PDF ingestion jobs
-- external import jobs
-- retry jobs
-
-### 3. Frontend
-
+**4. Frontend**
 ```bash
 cd frontend
 npm install
 npm start
 ```
 
-Frontend runs on `http://localhost:3000`
+### Variables d'environnement essentielles
 
-Optional frontend API override:
-- `REACT_APP_API_BASE_URL=http://127.0.0.1:8000`
+| Variable | Valeur par défaut | Impact |
+|----------|-------------------|--------|
+| `RAG_QA_USE_HYBRID` | `false` | Active fusion BM25 + vectoriel |
+| `RAG_QA_USE_MULTI_QUERY` | `false` | Active l'expansion de requête |
+| `RAG_QA_TOP_K` | `5` | Nombre de chunks récupérés |
+| `RAG_LLM_MODEL` | `mistral` | Modèle LLM Ollama |
+| `OPENALEX_API_KEY` | *(vide)* | **Débloque** le téléchargement full-text OpenAlex |
+| `CORE_API_KEY` | *(vide)* | **Débloque** CORE full-text |
+| `UNPAYWALL_EMAIL` | *(vide)* | **Débloque** la résolution OA via Unpaywall |
 
-## Docker Setup
+> Sans `OPENALEX_API_KEY`, `CORE_API_KEY` et `UNPAYWALL_EMAIL`, la proportion de papiers en mode *summary-only* augmente significativement.
 
-```bash
-docker compose up --build
+### Exemple d'utilisation
+
+1. Ouvrir `http://localhost:3000`
+![alt text](img/image.png)
+
+2. Créer une nouvelle session de recherche
+![alt text](img/image-1.png)
+
+3. Uploader un ou plusieurs PDFs via l'interface
+![alt text](img/image-2.png)
+![alt text](img/image-3.png)
+
+4. Sélectionner les sources et poser une question dans le chat
+![alt text](img/image-4.png)
+
+5. Cliquer sur une citation pour ouvrir le passage dans le viewer PDF
+![alt text](img/image-5.png)
+
+6. Sélectionner 2+ papiers, passer en mode Compare, poser une question de comparaison
+![alt text](img/image-6.png)
+
+7. Cliquer sur "Discover" sur un papier pour explorer le graphe de citations
+![alt text](img/image-7.png)
+![alt text](img/image-8.png)
+
+---
+
+## 4. Résultats et performances
+
+### Métriques fonctionnelles
+
+| Indicateur | Résultat | Commentaire |
+|------------|----------|-------------|
+| Modes QA fonctionnels | **4 / 4** | `qa`, `compare`, `lit_review`, `monitoring` |
+| Providers de découverte | **7+** | OpenAlex, arXiv, EuropePMC, CORE, Crossref, Unpaywall, natif |
+| Suites de tests | **4** | Flux API, citations, résilience, discovery |
+| Isolation sessions | **Garantie** | Index Chroma distincts par session |
+| Déploiement | **One-command** | `start-demo.ps1` / `start-demo.sh` |
+| Dépendance cloud | **Zéro** | Modèles et index 100% locaux |
+
+### Performances observées
+
+**Temps d'inférence (mesurés sur matériel de développement) :**
+
+| Opération | CPU (8 cœurs) | GPU (NVIDIA) |
+|-----------|---------------|--------------|
+| Embedding d'un chunk | ~50 ms | ~10 ms |
+| Réponse QA courte | 10–20 s | 2–5 s |
+| Réponse QA longue | 30–60 s | 5–15 s |
+| Mode `compare` (3 sources) | 60–120 s | 15–30 s |
+
+> La proportion dépend fortement du domaine et des clés API configurées.
+
+**Graphiques de performances (latence par mode, distribution des scores de confiance, taux de refus) générés à partir des données `RunLog`**
+![alt text](img/image-9.png)
+
+### Visualisations
+
+**Schéma de flux du pipeline RAG :**
+```
+Question utilisateur
+       │
+       ├─[Multi-query]──▶ LLM génère N variantes
+       │
+       ├──▶ Chroma (dense 768-dim) ──┐
+       │                              ├──▶ RRF Fusion ──▶ Mistral 7B ──▶ Réponse + Citations
+       └──▶ BM25 (lexical) ──────────┘
 ```
 
-Services:
-- `postgres`
-- `ollama`
-- `ollama-init`
-- `backend`
-- `backend-worker`
-- `frontend`
+**Architecture de stockage :**
+```
+Session A ──▶ chroma/session_A/ (index isolé)
+Session B ──▶ chroma/session_B/ (index isolé)
+Session C ──▶ chroma/session_C/ (index isolé)
+                    ↕ jamais mélangés
+PostgreSQL ──▶ metadata + history + logs (partagé, filtré par session_id)
+```
 
-Optional GPU pass-through:
-- `docker-compose.gpu.yml`
+---
 
-## Environment Variables
+## 5. Analyse critique
 
-Important backend settings from `backend/.env.example`:
+### Limites du système
 
-### Core
-- `SECRET_KEY`
-- `DEBUG`
-- `ALLOWED_HOSTS`
-- `CORS_ALLOW_ALL`
+**Qualité des données :**
+- **30–40% des imports** aboutissent en *summary-only* - conséquence directe des restrictions d'accès aux PDFs (murs payants, landing pages déguisées en `.pdf`)
+- Le chunking par `RecursiveCharacterTextSplitter` souffre sur les PDFs à mise en page complexe (colonnes multiples, tableaux, formules LaTeX) - des chunks incohérents dégradent la qualité des réponses
+- Les PDFs scannés (images non-OCRisées) ne sont pas exploitables - le texte extrait est vide ou corrompu
 
-### Database
-- `DB_ENGINE`
-- `DB_NAME`
-- `DB_USER`
-- `DB_PASSWORD`
-- `DB_HOST`
-- `DB_PORT`
+**Temps d'inférence :**
+- Mistral 7B sur CPU représente 15–60 secondes par requête - trop long pour une utilisation interactive intensive
+- Les modes `compare` et `lit_review` avec plusieurs sources cumulent les appels LLM et deviennent sensiblement lents
 
-### Local Model / Retrieval
-- `OLLAMA_BASE_URL`
-- `CHROMA_PERSIST_DIR`
-- `RAG_QA_USE_HYBRID`
-- `RAG_QA_USE_MULTI_QUERY`
-- `RAG_QA_USE_RERANKING`
-- `RAG_QA_TOP_K`
-- `RAG_LLM_MODEL`
-- `RAG_LLM_NUM_PREDICT`
-- `RAG_LLM_TEMPERATURE`
-- `RAG_LLM_NUM_CTX`
-- `RAG_LLM_KEEP_ALIVE`
+**Limites du modèle LLM :**
+- Malgré le *hallucination guard*, Mistral 7B peut générer des affirmations non ancrées sur des questions hors-contexte
+- Fenêtre de contexte limitée : avec `NUM_CTX` insuffisant, les chunks les plus anciens peuvent être tronqués dans les modes multi-sources
 
-### External Provider Resilience
-- `EXTERNAL_API_RETRIES`
-- `EXTERNAL_API_RETRY_BACKOFF_SECONDS`
-- `EXTERNAL_API_CIRCUIT_FAILURE_THRESHOLD`
-- `EXTERNAL_API_CIRCUIT_OPEN_SECONDS`
+### Biais potentiels
 
-### External Provider Credentials / Contact
-- `OPENALEX_MAILTO`
-- `OPENALEX_API_KEY`
-- `CORE_API_KEY`
-- `UNPAYWALL_EMAIL`
+| Biais | Nature | Impact |
+|-------|--------|--------|
+| **Biais de couverture** | arXiv sur-représenté en IA/ML, EuropePMC en biomédical | Autres domaines (SHS, droit, ingénierie) moins bien couverts |
+| **Biais linguistique** | Modèles et corpus orientés anglais | Textes en français, arabe, etc. donnent des résultats dégradés |
+| **Biais d'accès** | OA-first dans la stratégie d'import | Favorise implicitement les publications en accès libre |
+| **Biais LLM** | Distributions statistiques de Mistral 7B | Peut refléter les biais du corpus d'entraînement du modèle |
 
-These materially affect import quality:
-- without `OPENALEX_API_KEY`, OpenAlex content API downloads are unavailable
-- without `CORE_API_KEY`, CORE full-text lookup is disabled
-- without `UNPAYWALL_EMAIL`, Unpaywall DOI OA resolution is disabled
+### Difficultés rencontrées
 
-## Testing
+1. **Validation des PDFs** - Des dizaines d'URLs déclarées `.pdf` renvoient des pages HTML. Solution : vérification stricte du Content-Type HTTP + magic bytes `%PDF-` avant ingestion.
+2. **Déduplication multi-provider** - Un même papier peut avoir un ID OpenAlex, un ID arXiv et un DOI différents. Sans déduplication par `source_type`, des doublons apparaissent dans les sessions.
+3. **Worker non-supervisé** - `process_ingestion_jobs` est un processus à lancer manuellement. En cas de crash, les jobs restent `PENDING` indéfiniment sans alerte automatique.
+4. **Cohérence historique** - Les réponses stockées en base contiennent des métadonnées providers de l'époque de leur génération. Les champs ajoutés ultérieurement (ex: badges provider) n'existent pas dans les réponses historiques.
 
-Run the backend tests:
+### Leçons apprises
+
+- **La robustesse prime sur les fonctionnalités** : valider chaque entrée de données dès l'ingestion évite des bug en cascade en aval.
+- **L'isolation par session est une contrainte non-négociable** : la contaminer pour des raisons de performance crée des problèmes de reproductibilité impossibles à déboguer.
+- **L'honnêteté sur le summary-only est préférable au mensonge** : marquer clairement les sources sans full-text évite que l'utilisateur fasse confiance à des réponses incomplètes.
+- **Les modèles locaux ont un coût matériel réel** : Mistral 7B sur CPU est utilisable en développement, mais la production requiert un GPU dédié ou une architecture plus légère.
+
+---
+
+## 6. Améliorations futures
+
+### Priorité haute
+
+| Amélioration | Justification |
+|--------------|---------------|
+| **Celery ou RQ pour le worker** | Rendre l'ingestion asynchrone, supervisée et auto-restartable - condition nécessaire pour la production |
+| **OCR des PDFs scannés** (Tesseract / PyMuPDF) | ~15–20% des PDFs académiques sont des scans non-indexables - c'est un gain direct sur la qualité |
+| **CI/CD GitHub Actions** | La structure `.github/` est en place - finaliser les tests Django automatisés à chaque push |
+
+### Priorité moyenne
+
+| Amélioration | Justification |
+|--------------|---------------|
+| **Score d'importabilité en UI** | Afficher clairement la probabilité d'obtenir un full-text avant d'importer |
+| **Support ACL** (Association for Computational Linguistics) | Provider manquant pour les papiers NLP/CL non présents sur arXiv |
+| **Monitoring Prometheus/Grafana** | L'API `/metrics/summary/` existe - l'export est la prochaine étape |
+
+### Priorité basse (R&D)
+
+| Amélioration | Justification |
+|--------------|---------------|
+| **Fine-tuning de l'embedding** sur corpus scientifique | `nomic-embed-text` est généraliste - un modèle spécialisé améliorerait le rappel sur textes techniques |
+| **Chunking adaptatif** | Détecter les layouts PDF complexes et adapter la stratégie de découpage |
+| **Support multilingue** | Intégrer un modèle d'embedding multilingue pour les corpus non-anglais |
+
+---
+
+## Structure du dépôt
+
+```
+.
+├── backend/
+│   ├── config/           # Settings Django et URL root
+│   ├── rag/              # Modèles, vues, services, tests
+│   │   ├── services/     # RetrievalService, DiscoveryService, LLM
+│   │   ├── tests/        # test_api_flows, test_resilience, etc.
+│   │   └── models.py     # Session, Document, RunLog, Highlight...
+│   ├── requirements.txt
+│   └── Dockerfile
+├── frontend/
+│   ├── src/App.js        # Interface principale
+│   ├── src/api.js        # Client API frontend
+│   └── Dockerfile
+├── docker-compose.yml
+├── docker-compose.gpu.yml
+├── start-demo.ps1 / start-demo.sh
+└── TECHNICAL_DOCUMENTATION.md
+```
+
+---
+
+## Tests
 
 ```bash
 cd backend
 python manage.py test rag -v 2
 ```
 
-Notable suites:
-- `rag.test_api_flows`
-- `rag.test_citations_and_alignment`
-- `rag.test_resilience`
-- `rag.tests`
+Suites disponibles :
 
-## Operational Notes and Caveats
+| Suite | Ce qu'elle teste |
+|-------|-----------------|
+| `rag.test_api_flows` | Upload, liste, suppression, questions |
+| `rag.test_citations_and_alignment` | Cohérence des citations retournées |
+| `rag.test_resilience` | Circuit-breaker, retry, backoff |
+| `rag.tests` | arXiv, ordering de discovery |
 
-- The ingestion/import worker is durable and DB-backed, but it is still a separate long-running process that must be started.
-- External provider coverage varies by field and licensing constraints.
-- Full-text import is best-effort and legally conservative.
-- Summary-only mode is still unavoidable for some papers.
-- Citation pages are stored zero-indexed in retrieval metadata and displayed one-indexed in the UI.
-- Existing historical chat suggestions may contain stale provider metadata from older runs until regenerated.
+---
 
-## Best Current Use Cases
-
-This system works best for:
-- scientific PDF QA with explicit evidence
-- paper-to-paper comparison
-- literature review drafting
-- LLM / RAG / NLP / transformer-topic exploration with arXiv-first discovery
-- biomedical discovery with Europe PMC-first routing
-- annotation and citation-driven reading workflows
-
-## License
-
-No explicit license file is currently present in the repository.
+*Projet de Fin d'Études - Aymane KJAOUJ - Mohamed OUALGHAZI - Wiame RAKI - Yahia ZRIGA - Mars 2026*

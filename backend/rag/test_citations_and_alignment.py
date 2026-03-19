@@ -90,6 +90,7 @@ class PageAlignmentApiRegressionTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["page"], 1)
+        self.assertEqual(response.data["page_count"], 2)
         self.assertEqual(response.data["text"], "page-one")
         mock_storage_exists.assert_called_once_with("pdfs/alignment_abcd123.pdf")
         mock_storage_path.assert_called_once_with("pdfs/alignment_abcd123.pdf")

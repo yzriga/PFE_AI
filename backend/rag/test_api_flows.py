@@ -41,6 +41,7 @@ class ApiFlowTests(TestCase):
             self.assertEqual(len(list_response.data["pdfs"]), 1)
             self.assertEqual(list_response.data["pdfs"][0]["storage_path"], "pdfs/sample.pdf")
             self.assertEqual(list_response.data["pdfs"][0]["file_url"], "/media/pdfs/sample.pdf")
+            self.assertIsNone(list_response.data["pdfs"][0]["page_count"])
 
     def test_duplicate_upload_name_keeps_real_storage_path(self):
         other_session = Session.objects.create(name="other-session")

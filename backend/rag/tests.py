@@ -416,6 +416,53 @@ class LiteratureReviewSynthesisTests(SimpleTestCase):
         self.assertNotIn("Common Approaches Across Papers", result["content"])
 
 
+class CompareSynthesisTests(SimpleTestCase):
+    def test_compare_papers_falls_back_to_question_aware_claims_when_json_is_invalid(self):
+        docs = [
+            type(
+                "Doc",
+                (),
+                {
+                    "metadata": {"source": "a.pdf", "page": 0},
+                    "page_content": "Paper A uses dense retrieval over Wikipedia passages for generation.",
+                },
+            )(),
+            type(
+                "Doc",
+                (),
+                {
+                    "metadata": {"source": "b.pdf", "page": 2},
+                    "page_content": "Paper B enriches embeddings with topic signals to improve retrieval precision.",
+                },
+            )(),
+        ]
+
+        responses = iter([
+            "Here is the comparison in prose, not JSON.",
+            "Still not valid JSON.",
+            "QUESTION_FOCUS: a.pdf frames the problem around dense retrieval for generation.\nMETHOD_OR_EVIDENCE: a.pdf retrieves Wikipedia passages with a dense retriever.\nTAKEAWAY: a.pdf changes the generation architecture by coupling it to retrieved passages.",
+            "QUESTION_FOCUS: b.pdf frames the problem around improving retrieval quality before generation.\nMETHOD_OR_EVIDENCE: b.pdf augments embeddings with topic signals and term-based structure.\nTAKEAWAY: b.pdf changes the retrieval representation rather than the core generator.",
+            "- a.pdf changes the RAG pipeline by coupling generation to dense passage retrieval, whereas b.pdf changes retrieval representation through topic-enriched embeddings.\n- a.pdf emphasizes end-to-end retrieval-augmented generation, while b.pdf emphasizes improving retrieval precision before generation.",
+        ])
+        service = SynthesisService()
+        service.llm = type("StubLlm", (), {"invoke": lambda self, prompt: next(responses)})()
+
+        result = service.compare_papers(
+            "How do the papers differ in retrieval?",
+            docs,
+            ["a.pdf", "b.pdf"],
+        )
+
+        self.assertEqual(result["num_papers"], 2)
+        self.assertEqual(len(result["claims"]), 2)
+        self.assertIn("simplified comparison", result["message"])
+        self.assertEqual(result["claims"][0]["papers"][0]["stance"], "supports")
+        self.assertTrue(result["claims"][0]["papers"][0]["evidence"])
+        self.assertIn("whereas", result["claims"][0]["claim"])
+        self.assertIn("a.pdf", result["claims"][0]["claim"])
+        self.assertIn("b.pdf", result["claims"][0]["claim"])
+
+
 class IngestionJobRunnerTests(TestCase):
     def test_document_ingestion_error_result_marks_job_failed(self):
         session = Session.objects.create(name="runner-session")

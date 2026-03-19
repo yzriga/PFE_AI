@@ -4,10 +4,10 @@ if __name__ == "__main__":
     question = "What is the main contribution of the paper?"
     result = ask_with_citations(question)
 
-    print("\n🧠 ANSWER:\n")
+    print("\nANSWER:\n")
     print(result["answer"])
 
-    print("\n📚 SOURCES:\n")
+    print("\nSOURCES:\n")
     for c in result["citations"]:
         print("-", c)
 

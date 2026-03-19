@@ -191,7 +191,7 @@ class Question(models.Model):
         Session,
         on_delete=models.CASCADE,
         related_name="questions",
-        null=True,          # 👈 TEMPORARY
+        null=True,          #  TEMPORARY
         blank=True
     )
     created_at = models.DateTimeField(auto_now_add=True)
