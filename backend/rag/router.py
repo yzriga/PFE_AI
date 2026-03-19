@@ -40,3 +40,77 @@ def is_page_count_question(q: str) -> bool:
             "total pages"
         ]
     )
+
+
+RESEARCH_KEYWORDS = {
+    "paper", "papers", "study", "studies", "research", "literature", "evidence",
+    "trial", "trials", "dataset", "datasets", "model", "models", "benchmark",
+    "benchmarks", "method", "methods", "algorithm", "algorithms", "retrieval",
+    "rag", "llm", "transformer", "transformers", "diffusion", "genomics",
+    "cancer", "diabetes", "cardiology", "clinical", "therapy", "biomarker",
+    "meta-analysis", "systematic", "review", "reviews", "nlp", "vision",
+    "protein", "omics", "covid", "federated", "multimodal", "architecture",
+    "attention", "bert", "gpt", "encoder", "decoder", "prompting", "alignment",
+}
+
+GENERAL_BROAD_PATTERNS = [
+    r"^what is [a-z\s]+$",
+    r"^explain [a-z\s]+$",
+    r"^tell me about [a-z\s]+$",
+    r"^how does [a-z\s]+ work$",
+]
+
+
+def is_specific_research_question(question: str) -> bool:
+    q = (question or "").strip().lower()
+    if len(q) < 18:
+        return False
+    has_explanatory_topic_form = any(
+        q.startswith(prefix)
+        for prefix in [
+            "explain ",
+            "describe ",
+            "summarize ",
+            "overview of ",
+            "how does ",
+            "how do ",
+            "what are ",
+        ]
+    )
+    has_domain_anchor = any(
+        token in q
+        for token in [
+            "transformer", "rag", "retrieval", "attention", "bert", "gpt",
+            "clinical", "dataset", "benchmark", "diffusion", "protein",
+        ]
+    )
+    if any(re.match(pattern, q) for pattern in GENERAL_BROAD_PATTERNS) and not (
+        has_explanatory_topic_form and has_domain_anchor
+    ):
+        return False
+    if '"' in q or "'" in q:
+        return True
+    keyword_hits = sum(1 for token in RESEARCH_KEYWORDS if token in q)
+    has_topic_structure = any(
+        phrase in q
+        for phrase in [
+            "papers about",
+            "papers on",
+            "studies on",
+            "studies about",
+            "evidence for",
+            "evidence on",
+            "literature on",
+            "recent work on",
+            "research on",
+            "compare",
+            "effect of",
+            "impact of",
+            "for ",
+        ]
+    )
+    return (
+        keyword_hits >= 2
+        or (keyword_hits >= 1 and has_topic_structure)
+        or (has_explanatory_topic_form and has_domain_anchor)
+    )

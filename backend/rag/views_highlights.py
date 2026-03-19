@@ -1,288 +1,137 @@
-"""
-API views for highlights and annotations (D5).
-
-Provides CRUD operations for user highlights with:
-- Text selection with page/offset positioning
-- User notes and tags
-- Semantic embedding for retrieval integration
-"""
-
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from django.shortcuts import get_object_or_404
 
-from .models import Document, Highlight, HighlightEmbedding
-from .services.highlight_service import HighlightService
+from rag.models import Highlight, Document, Session
+from rag.services.highlight_service import HighlightService
 
 
-@api_view(['POST'])
-def create_highlight(request):
-    """
-    Create a new highlight/annotation on a document.
-    
-    POST /api/highlights/
-    Body:
-    {
-      "document_id": 123,
-      "page": 5,
-      "start_offset": 100,
-      "end_offset": 250,
-      "text": "Selected text from document",
-      "note": "My personal note about this passage",
-      "tags": ["important", "methodology"]
+def _serialize_highlight(hl: Highlight) -> dict:
+    return {
+        "id": hl.id,
+        "document_id": hl.document_id,
+        "filename": hl.document.filename,
+        "page": hl.page,
+        "start_offset": hl.start_offset,
+        "end_offset": hl.end_offset,
+        "text": hl.text,
+        "note": hl.note,
+        "tags": hl.tags,
+        "created_at": hl.created_at,
+        "updated_at": hl.updated_at,
     }
-    
-    Response 201:
-    {
-      "id": 45,
-      "document_id": 123,
-      "page": 5,
-      "start_offset": 100,
-      "end_offset": 250,
-      "text": "Selected text...",
-      "note": "My personal note...",
-      "tags": ["important", "methodology"],
-      "embedded": true,
-      "embedding_id": "highlight_45_abc123",
-      "created_at": "2026-02-09T10:30:00Z",
-      "updated_at": "2026-02-09T10:30:00Z"
-    }
-    """
-    # Validate required fields
-    required_fields = ['document_id', 'page', 'start_offset', 'end_offset', 'text']
-    for field in required_fields:
-        if field not in request.data:
-            return Response(
-                {"error": f"Missing required field: {field}"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-    
-    # Validate document exists
-    document_id = request.data.get('document_id')
+
+
+@api_view(["GET", "POST"])
+def highlights(request):
+    service = HighlightService()
+
+    if request.method == "GET":
+        document_id = request.GET.get("document_id")
+        session_name = request.GET.get("session")
+
+        qs = Highlight.objects.select_related("document", "document__session")
+        if document_id:
+            qs = qs.filter(document_id=document_id)
+        if session_name:
+            qs = qs.filter(document__session__name=session_name)
+
+        data = [_serialize_highlight(hl) for hl in qs.order_by("-created_at")]
+        return Response({"highlights": data}, status=status.HTTP_200_OK)
+
+    # POST create
+    document_id = request.data.get("document_id")
+    page = int(request.data.get("page", 1))
+    text = (request.data.get("text") or "").strip()
+    note = (request.data.get("note") or "").strip()
+    tags = request.data.get("tags") or []
+    start_offset = int(request.data.get("start_offset", 0))
+    end_offset = int(request.data.get("end_offset", max(len(text), 1)))
+
+    if not document_id or not text:
+        return Response(
+            {"error": "document_id and text are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     try:
         document = Document.objects.get(id=document_id)
     except Document.DoesNotExist:
         return Response(
-            {"error": f"Document {document_id} not found"},
-            status=status.HTTP_404_NOT_FOUND
+            {"error": "Document not found"},
+            status=status.HTTP_404_NOT_FOUND,
         )
-    
-    # Validate page number
-    page = request.data.get('page')
-    if document.page_count and page > document.page_count:
-        return Response(
-            {"error": f"Page {page} exceeds document page count ({document.page_count})"},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    
-    # Create highlight
-    highlight = Highlight.objects.create(
+
+    hl = Highlight.objects.create(
         document=document,
         page=page,
-        start_offset=request.data.get('start_offset'),
-        end_offset=request.data.get('end_offset'),
-        text=request.data.get('text'),
-        note=request.data.get('note', ''),
-        tags=request.data.get('tags', [])
+        start_offset=start_offset,
+        end_offset=end_offset,
+        text=text,
+        note=note,
+        tags=tags if isinstance(tags, list) else [],
     )
-    
-    # Create embedding for semantic retrieval
-    highlight_service = HighlightService()
-    embedding_id = highlight_service.embed_highlight(highlight)
-    
-    # Return created highlight
-    return Response({
-        "id": highlight.id,
-        "document_id": highlight.document.id,
-        "page": highlight.page,
-        "start_offset": highlight.start_offset,
-        "end_offset": highlight.end_offset,
-        "text": highlight.text,
-        "note": highlight.note,
-        "tags": highlight.tags,
-        "embedded": embedding_id is not None,
-        "embedding_id": embedding_id,
-        "created_at": highlight.created_at,
-        "updated_at": highlight.updated_at
-    }, status=status.HTTP_201_CREATED)
+
+    embedding_indexed = True
+    try:
+        service.index_highlight(hl)
+    except Exception as exc:
+        embedding_indexed = False
+        # Keep highlight even if embedding backend is unavailable
+        hl.note = f"{hl.note}\n[Embedding index failed: {exc}]".strip()
+        hl.save(update_fields=["note"])
+
+    payload = _serialize_highlight(hl)
+    payload["embedding_indexed"] = embedding_indexed
+    return Response(payload, status=status.HTTP_201_CREATED)
 
 
-@api_view(['GET'])
-def list_highlights(request):
-    """
-    List highlights with optional filtering.
-    
-    GET /api/highlights/?document_id=123&tag=important&page=5
-    
-    Query params:
-    - document_id: Filter by document
-    - tag: Filter by tag (exact match)
-    - page: Filter by page number
-    
-    Response 200:
-    {
-      "count": 5,
-      "highlights": [
+@api_view(["DELETE"])
+def delete_highlight(request, highlight_id: int):
+    try:
+        hl = Highlight.objects.select_related("document", "document__session").get(
+            id=highlight_id
+        )
+    except Highlight.DoesNotExist:
+        return Response(
+            {"error": "Highlight not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    service = HighlightService()
+    service.delete_highlight_embedding(hl)
+    hl.delete()
+    return Response({"deleted": True}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def search_highlights(request):
+    session_name = (request.GET.get("session") or "").strip()
+    query = (request.GET.get("q") or "").strip()
+    limit = int(request.GET.get("limit", 20))
+
+    if not session_name or not query:
+        return Response(
+            {"error": "session and q are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        session = Session.objects.get(name=session_name)
+    except Session.DoesNotExist:
+        return Response(
+            {"error": "Session not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    service = HighlightService()
+    results = service.search_highlights(session=session, query=query, limit=limit)
+
+    return Response(
         {
-          "id": 45,
-          "document_id": 123,
-          "document_filename": "paper.pdf",
-          "page": 5,
-          "text": "...",
-          "note": "...",
-          "tags": [...],
-          "created_at": "...",
-          "updated_at": "..."
-        }
-      ]
-    }
-    """
-    # Start with all highlights
-    highlights = Highlight.objects.all()
-    
-    # Apply filters
-    document_id = request.query_params.get('document_id')
-    if document_id:
-        highlights = highlights.filter(document_id=document_id)
-    
-    page = request.query_params.get('page')
-    if page:
-        highlights = highlights.filter(page=int(page))
-    
-    # Order by document, page, position
-    highlights = highlights.order_by('document', 'page', 'start_offset')
-    
-    # Apply tag filter (in Python to avoid SQLite JSON issues)
-    tag = request.query_params.get('tag')
-    
-    # Serialize
-    result = []
-    for h in highlights:
-        # Filter by tag if specified
-        if tag and tag not in h.tags:
-            continue
-            
-        result.append({
-            "id": h.id,
-            "document_id": h.document.id,
-            "document_filename": h.document.filename,
-            "page": h.page,
-            "start_offset": h.start_offset,
-            "end_offset": h.end_offset,
-            "text": h.text,
-            "note": h.note,
-            "tags": h.tags,
-            "created_at": h.created_at,
-            "updated_at": h.updated_at
-        })
-    
-    return Response({
-        "count": len(result),
-        "highlights": result
-    }, status=status.HTTP_200_OK)
-
-
-@api_view(['GET'])
-def get_highlight(request, highlight_id):
-    """
-    Get a single highlight by ID.
-    
-    GET /api/highlights/<id>/
-    
-    Response 200:
-    {
-      "id": 45,
-      "document_id": 123,
-      "document_filename": "paper.pdf",
-      "page": 5,
-      ...
-    }
-    """
-    highlight = get_object_or_404(Highlight, id=highlight_id)
-    
-    return Response({
-        "id": highlight.id,
-        "document_id": highlight.document.id,
-        "document_filename": highlight.document.filename,
-        "page": highlight.page,
-        "start_offset": highlight.start_offset,
-        "end_offset": highlight.end_offset,
-        "text": highlight.text,
-        "note": highlight.note,
-        "tags": highlight.tags,
-        "created_at": highlight.created_at,
-        "updated_at": highlight.updated_at
-    }, status=status.HTTP_200_OK)
-
-
-@api_view(['PUT', 'PATCH'])
-def update_highlight(request, highlight_id):
-    """
-    Update a highlight's note and/or tags.
-    
-    PUT/PATCH /api/highlights/<id>/
-    Body:
-    {
-      "note": "Updated note",
-      "tags": ["important", "revised"]
-    }
-    
-    Response 200:
-    {
-      "id": 45,
-      ...
-    }
-    
-    Note: Text and position fields are immutable after creation.
-    """
-    highlight = get_object_or_404(Highlight, id=highlight_id)
-    
-    # Update mutable fields only
-    if 'note' in request.data:
-        highlight.note = request.data['note']
-    
-    if 'tags' in request.data:
-        highlight.tags = request.data['tags']
-    
-    highlight.save()
-    
-    # Re-embed if note changed significantly
-    if 'note' in request.data and request.data['note']:
-        highlight_service = HighlightService()
-        highlight_service.update_embedding(highlight)
-    
-    return Response({
-        "id": highlight.id,
-        "document_id": highlight.document.id,
-        "document_filename": highlight.document.filename,
-        "page": highlight.page,
-        "start_offset": highlight.start_offset,
-        "end_offset": highlight.end_offset,
-        "text": highlight.text,
-        "note": highlight.note,
-        "tags": highlight.tags,
-        "created_at": highlight.created_at,
-        "updated_at": highlight.updated_at
-    }, status=status.HTTP_200_OK)
-
-
-@api_view(['DELETE'])
-def delete_highlight(request, highlight_id):
-    """
-    Delete a highlight and its embedding.
-    
-    DELETE /api/highlights/<id>/
-    
-    Response 204: (no content)
-    """
-    highlight = get_object_or_404(Highlight, id=highlight_id)
-    
-    # Delete embedding from ChromaDB first
-    highlight_service = HighlightService()
-    highlight_service.delete_embedding(highlight)
-    
-    # Delete highlight (cascade deletes HighlightEmbedding)
-    highlight.delete()
-    
-    return Response(status=status.HTTP_204_NO_CONTENT)
+            "session": session.name,
+            "query": query,
+            "results": results,
+        },
+        status=status.HTTP_200_OK,
+    )
