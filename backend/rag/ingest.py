@@ -1,12 +1,12 @@
 from pathlib import Path
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_ollama import OllamaEmbeddings
 from langchain_chroma import Chroma
 
 from rag.utils import get_session_path, normalize_filename
 from rag.metadata import extract_title_and_abstract
 from rag.models import Document
+from rag.services.ollama_client import create_embeddings
 
 
 def ingest_pdf(path: str, session_name: str, document: Document):
@@ -50,7 +50,7 @@ def ingest_pdf(path: str, session_name: str, document: Document):
     chunks = splitter.split_documents(pages)
 
     # 6. Store in session vector DB
-    embeddings = OllamaEmbeddings(model="nomic-embed-text")
+    embeddings = create_embeddings(model="nomic-embed-text")
     persist_dir = get_session_path(session_name)
 
     vectordb = Chroma(

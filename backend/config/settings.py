@@ -12,24 +12,30 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# Load environment variables from .env file
+load_dotenv(BASE_DIR / ".env")
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
+# ----- Security -----
+SECRET_KEY = os.getenv(
+    "SECRET_KEY",
+    "django-insecure-CHANGE-ME-IN-PRODUCTION",
+)
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-4s#0ucylvvqnz@25y1-@b8-l#^wutb!doduq2odkl3@=iop1ja'
+DEBUG = os.getenv("DEBUG", "False").lower() in ("true", "1", "yes")
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+ALLOWED_HOSTS = [
+    h.strip()
+    for h in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+    if h.strip()
+]
 
-ALLOWED_HOSTS = []
 
-
-# Application definition
+# ----- Application definition -----
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -39,12 +45,15 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'corsheaders',
     'core',
     'rag',
-    'corsheaders',
 ]
 
+# NOTE: CorsMiddleware MUST come before CommonMiddleware.
+# The duplicate CommonMiddleware that was here previously has been removed.
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -52,11 +61,9 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    "corsheaders.middleware.CorsMiddleware",
-    "django.middleware.common.CommonMiddleware",
 ]
 
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = os.getenv("CORS_ALLOW_ALL", "True").lower() in ("true", "1", "yes")
 
 ROOT_URLCONF = 'config.urls'
 
@@ -78,57 +85,99 @@ TEMPLATES = [
 WSGI_APPLICATION = 'config.wsgi.application'
 
 
-# Database
-# https://docs.djangoproject.com/en/6.0/ref/settings/#databases
+# ----- Database -----
+# Defaults to PostgreSQL; falls back to SQLite when DB_ENGINE is not set.
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+_db_engine = os.getenv("DB_ENGINE", "django.db.backends.sqlite3")
+
+if _db_engine == "django.db.backends.sqlite3":
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": _db_engine,
+            "NAME": os.getenv("DB_NAME", "navigator"),
+            "USER": os.getenv("DB_USER", "navigator"),
+            "PASSWORD": os.getenv("DB_PASSWORD", "navigator"),
+            "HOST": os.getenv("DB_HOST", "localhost"),
+            "PORT": os.getenv("DB_PORT", "5432"),
+        }
+    }
 
 
-# Password validation
-# https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
+# ----- Password validation -----
 
 AUTH_PASSWORD_VALIDATORS = [
-    {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
-    },
+    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
 ]
 
 
-# Internationalization
-# https://docs.djangoproject.com/en/6.0/topics/i18n/
+# ----- Internationalization -----
 
 LANGUAGE_CODE = 'en-us'
-
 TIME_ZONE = 'UTC'
-
 USE_I18N = True
-
 USE_TZ = True
 
 
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/6.0/howto/static-files/
+# ----- Static & Media -----
 
 STATIC_URL = 'static/'
 
-
-
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+# ----- Project-specific -----
+
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "data/chroma")
+
+# ----- RAG / QA performance knobs -----
+RAG_QA_USE_HYBRID = os.getenv("RAG_QA_USE_HYBRID", "True").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+RAG_QA_USE_MULTI_QUERY = os.getenv("RAG_QA_USE_MULTI_QUERY", "False").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+RAG_QA_USE_RERANKING = os.getenv("RAG_QA_USE_RERANKING", "True").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+RAG_QA_TOP_K = int(os.getenv("RAG_QA_TOP_K", "8"))
+RAG_LLM_MODEL = os.getenv("RAG_LLM_MODEL", "mistral")
+RAG_LLM_NUM_PREDICT = int(os.getenv("RAG_LLM_NUM_PREDICT", "320"))
+RAG_LLM_TEMPERATURE = float(os.getenv("RAG_LLM_TEMPERATURE", "0.2"))
+RAG_LLM_NUM_CTX = int(os.getenv("RAG_LLM_NUM_CTX", "4096"))
+RAG_LLM_KEEP_ALIVE = os.getenv("RAG_LLM_KEEP_ALIVE", "30m")
+
+# ----- External provider resilience -----
+EXTERNAL_API_RETRIES = int(os.getenv("EXTERNAL_API_RETRIES", "3"))
+EXTERNAL_API_RETRY_BACKOFF_SECONDS = float(
+    os.getenv("EXTERNAL_API_RETRY_BACKOFF_SECONDS", "1.0")
+)
+EXTERNAL_API_CIRCUIT_FAILURE_THRESHOLD = int(
+    os.getenv("EXTERNAL_API_CIRCUIT_FAILURE_THRESHOLD", "5")
+)
+EXTERNAL_API_CIRCUIT_OPEN_SECONDS = float(
+    os.getenv("EXTERNAL_API_CIRCUIT_OPEN_SECONDS", "60")
+)
+OPENALEX_MAILTO = os.getenv("OPENALEX_MAILTO", "")
+OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY", "")
+CORE_API_KEY = os.getenv("CORE_API_KEY", "")
+UNPAYWALL_EMAIL = os.getenv("UNPAYWALL_EMAIL", "")
