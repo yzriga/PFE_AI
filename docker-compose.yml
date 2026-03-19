@@ -10,7 +10,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U navigator"]
       interval: 5s
@@ -44,15 +44,13 @@ services:
     restart: "no"
     volumes:
       - ollama_data:/root/.ollama
-    command:
-      - sh
-      - -c
-      - |
-        set -e
-        for model in $$OLLAMA_PULL_MODELS; do
-          echo "Pulling model: $$model"
-          ollama pull "$$model"
-        done
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      set -e
+      for model in $$OLLAMA_PULL_MODELS; do
+        echo "Pulling model: $$model"
+        ollama pull "$$model"
+      done
 
   # ---- Django backend ----
   backend:
